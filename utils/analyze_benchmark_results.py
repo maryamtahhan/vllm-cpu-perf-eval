@@ -22,6 +22,7 @@ import numpy as np
 from pathlib import Path
 import re
 import sys
+import json
 
 # Set style for better-looking plots
 sns.set_style("whitegrid")
@@ -115,6 +116,75 @@ def extract_metrics(df):
 
     return pd.DataFrame(metrics)
 
+def parse_json_file(json_path):
+    """Parse guidellm JSON benchmark file as fallback when CSV is corrupted."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    metrics = []
+
+    for idx, bench in enumerate(data['benchmarks']):
+        try:
+            m = bench['metrics']
+
+            # Extract statistics
+            def get_stat(metric_dict, stat_name):
+                if isinstance(metric_dict, dict) and 'successful' in metric_dict:
+                    return metric_dict['successful'].get(stat_name)
+                return None
+
+            def get_p95(metric_dict):
+                """Extract P95 from percentiles dictionary."""
+                if isinstance(metric_dict, dict) and 'successful' in metric_dict:
+                    successful = metric_dict['successful']
+                    if 'percentiles' in successful and isinstance(successful['percentiles'], dict):
+                        return successful['percentiles'].get('p95')
+                return None
+
+            # Get mean values
+            req_per_sec = get_stat(m['requests_per_second'], 'mean')
+            concurrency = get_stat(m['request_concurrency'], 'mean')
+            output_tok_per_sec = get_stat(m['output_tokens_per_second'], 'mean')
+            ttft = get_stat(m['time_to_first_token_ms'], 'mean')
+            tpot = get_stat(m['time_per_output_token_ms'], 'mean')
+            latency = get_stat(m['request_latency'], 'mean')
+            successful = m['request_totals']['successful']
+
+            # Get P95 values from percentiles
+            req_per_sec_p95 = get_p95(m['requests_per_second'])
+            concurrency_p95 = get_p95(m['request_concurrency'])
+            output_tok_per_sec_p95 = get_p95(m['output_tokens_per_second'])
+            ttft_p95 = get_p95(m['time_to_first_token_ms'])
+            tpot_p95 = get_p95(m['time_per_output_token_ms'])
+            latency_p95 = get_p95(m['request_latency'])
+
+            # Get strategy from config
+            strategy = bench.get('config', {}).get('mode', 'unknown')
+
+            metric = {
+                'run_index': idx,
+                'strategy': str(strategy),
+                'requests_sec_mean': float(req_per_sec) if req_per_sec is not None else 0.0,
+                'requests_sec_p95': float(req_per_sec_p95) if req_per_sec_p95 is not None else 0.0,
+                'concurrency_mean': float(concurrency) if concurrency is not None else 0.0,
+                'concurrency_p95': float(concurrency_p95) if concurrency_p95 is not None else 0.0,
+                'throughput_tokens_sec_mean': float(output_tok_per_sec) if output_tok_per_sec is not None else 0.0,
+                'throughput_tokens_sec_p95': float(output_tok_per_sec_p95) if output_tok_per_sec_p95 is not None else 0.0,
+                'ttft_mean': float(ttft) if ttft is not None else 0.0,
+                'ttft_p95': float(ttft_p95) if ttft_p95 is not None else 0.0,
+                'tpot_mean': float(tpot) if tpot is not None else 0.0,
+                'tpot_p95': float(tpot_p95) if tpot_p95 is not None else 0.0,
+                'latency_mean': float(latency) if latency is not None else 0.0,
+                'latency_p95': float(latency_p95) if latency_p95 is not None else 0.0,
+                'successful_requests': int(successful) if successful is not None else 0,
+            }
+            metrics.append(metric)
+        except (KeyError, AttributeError, TypeError, ValueError) as e:
+            print(f"Warning: Failed to parse benchmark {idx} from JSON: {e}")
+            continue
+
+    return pd.DataFrame(metrics)
+
 def load_all_results(base_path="/Users/Xeon-single-platform"):
     """Load all benchmark results from the directory."""
     base = Path(base_path)
@@ -142,25 +212,45 @@ def load_all_results(base_path="/Users/Xeon-single-platform"):
         test_num, model, cores = match.groups()
 
         csv_file = test_dir / f"{test_dir.name}.csv"
-        if not csv_file.exists():
-            print(f"Warning: CSV file not found for {test_dir.name}")
-            continue
+        json_file = test_dir / "benchmarks.json"
 
         print(f"Processing {test_dir.name}...")
         try:
-            df = parse_csv_file(csv_file)
-            metrics_df = extract_metrics(df)
+            # Try CSV first
+            if csv_file.exists():
+                df = parse_csv_file(csv_file)
+                metrics_df = extract_metrics(df)
 
-            # Add metadata
-            metrics_df['test_name'] = test_dir.name
-            metrics_df['model'] = 'Llama' if model == 'llama' else 'TinyLlama'
-            metrics_df['cores'] = int(cores)
-            metrics_df['test_num'] = int(test_num)
+                # Check if data looks corrupted (throughput decreases as requests increase)
+                # This is a simple heuristic to detect scrambled CSV data
+                if len(metrics_df) > 2:
+                    sorted_df = metrics_df.sort_values('requests_sec_mean')
+                    throughputs = sorted_df['throughput_tokens_sec_mean'].values
+                    # If throughput drops to near-zero for higher request rates, data is likely corrupted
+                    if throughputs[-1] < throughputs[0] / 10 and throughputs[-1] < 1.0:
+                        print(f"  WARNING: CSV data appears corrupted (throughput drops with increasing load)")
+                        print(f"  Falling back to JSON file...")
+                        raise ValueError("Corrupted CSV data")
+            else:
+                raise FileNotFoundError("CSV not found")
 
-            all_results.append(metrics_df)
-        except Exception as e:
-            print(f"Error processing {test_dir.name}: {e}")
-            continue
+        except Exception as csv_error:
+            # Fall back to JSON if CSV fails or is corrupted
+            if json_file.exists():
+                print(f"  Using JSON file instead of CSV")
+                metrics_df = parse_json_file(json_file)
+            else:
+                print(f"  Error: No valid data source found for {test_dir.name}")
+                print(f"  CSV error: {csv_error}")
+                continue
+
+        # Add metadata
+        metrics_df['test_name'] = test_dir.name
+        metrics_df['model'] = 'Llama' if model == 'llama' else 'TinyLlama'
+        metrics_df['cores'] = int(cores)
+        metrics_df['test_num'] = int(test_num)
+
+        all_results.append(metrics_df)
 
     if not all_results:
         raise ValueError("No results found!")
@@ -168,35 +258,46 @@ def load_all_results(base_path="/Users/Xeon-single-platform"):
     return pd.concat(all_results, ignore_index=True)
 
 def create_comparison_plots(df, output_dir="benchmark_reports"):
-    """Create comparison plots for all metrics."""
+    """Create comparison plots for all metrics.
+
+    Note: This function selects ONLY the maximum throughput run from each test
+    (the run with highest mean throughput at highest load level). This shows peak
+    throughput but worst latency. For full sweep curve analysis showing all data
+    points and latency tradeoffs, use analyze_sweep_curves.py instead.
+    """
     Path(output_dir).mkdir(exist_ok=True)
 
-    # Filter to get the best performing run for each configuration
-    # We'll use the run with highest throughput for each test
+    # Filter to get the maximum throughput run for each configuration
+    # For sweep tests with multiple load levels, this selects only the highest throughput run
+    # (which is at the highest load level with worst latency)
     best_runs = df.loc[df.groupby('test_name')['throughput_tokens_sec_mean'].idxmax()]
 
     # Get available models and assign colors
     models = sorted(best_runs['model'].unique())
     colors = {'Llama': '#5B9BD5', 'TinyLlama': '#ED7D31'}
 
-    # Metrics: (mean_col, p95_col, title, ylabel, higher_is_better)
+    # Metrics: (mean_col, p95_col, title, ylabel, higher_is_better, show_p95)
+    # Note: P95 doesn't make sense for throughput/rate metrics (shows instantaneous
+    # peaks rather than sustained performance)
     metrics = [
         ('requests_sec_mean', 'requests_sec_p95', 'Requests/Second ↑',
-         'Requests per Second', True),
-        ('concurrency_mean', 'concurrency_p95', 'Mean Concurrency',
-         'Concurrent Requests', None),
+         'Requests per Second', True, False),  # Don't show P95 for rates
         ('throughput_tokens_sec_mean', 'throughput_tokens_sec_p95',
-         'Throughput (tokens/sec) ↑', 'Tokens per Second', True),
+         'Throughput (tokens/sec) ↑', 'Tokens per Second', True, False),  # Don't show P95
         ('ttft_mean', 'ttft_p95', 'TTFT (ms) ↓',
-         'Time to First Token (ms)', False),
+         'Time to First Token (ms)', False, True),  # Show P95 for latency
         ('tpot_mean', 'tpot_p95', 'TPOT (ms) ↓',
-         'Time per Output Token (ms)', False),
+         'Time per Output Token (ms)', False, True),  # Show P95 for latency
         ('latency_mean', 'latency_p95', 'Latency (sec) ↓',
-         'Request Latency (seconds)', False),
+         'Request Latency (seconds)', False, True),  # Show P95 for latency
     ]
 
-    for mean_col, p95_col, metric_name, ylabel, higher_is_better in metrics:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    for mean_col, p95_col, metric_name, ylabel, higher_is_better, show_p95 in metrics:
+        # Create figure with 1 or 2 subplots depending on whether we show P95
+        if show_p95:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        else:
+            fig, ax1 = plt.subplots(1, 1, figsize=(10, 6))
 
         # Left plot: Mean values
         plot_data_mean = best_runs.pivot(index='cores', columns='model', values=mean_col)
@@ -213,8 +314,9 @@ def create_comparison_plots(df, output_dir="benchmark_reports"):
                 all_bars_mean.append(bars)
 
         ax1.set_xlabel('Number of Cores', fontsize=12)
-        ax1.set_ylabel(f'{ylabel} (Mean)', fontsize=12)
-        ax1.set_title(f'{metric_name} - Mean', fontsize=13, fontweight='bold')
+        ax1.set_ylabel(ylabel if not show_p95 else f'{ylabel} (Mean)', fontsize=12)
+        ax1.set_title(metric_name if not show_p95 else f'{metric_name} - Mean',
+                     fontsize=13, fontweight='bold')
         ax1.set_xticks(x)
         ax1.set_xticklabels([f'{cores}c' for cores in plot_data_mean.index])
         ax1.legend()
@@ -229,33 +331,34 @@ def create_comparison_plots(df, output_dir="benchmark_reports"):
                            f'{height:.1f}',
                            ha='center', va='bottom', fontsize=9)
 
-        # Right plot: P95 values
-        plot_data_p95 = best_runs.pivot(index='cores', columns='model', values=p95_col)
+        # Right plot: P95 values (only for latency metrics)
+        if show_p95:
+            plot_data_p95 = best_runs.pivot(index='cores', columns='model', values=p95_col)
 
-        all_bars_p95 = []
-        for i, model in enumerate(models):
-            if model in plot_data_p95.columns:
-                offset = (i - len(models)/2 + 0.5) * width if len(models) > 1 else 0
-                bars = ax2.bar(x + offset, plot_data_p95[model], width,
-                              label=model, alpha=0.8, color=colors.get(model, '#999999'))
-                all_bars_p95.append(bars)
+            all_bars_p95 = []
+            for i, model in enumerate(models):
+                if model in plot_data_p95.columns:
+                    offset = (i - len(models)/2 + 0.5) * width if len(models) > 1 else 0
+                    bars = ax2.bar(x + offset, plot_data_p95[model], width,
+                                  label=model, alpha=0.8, color=colors.get(model, '#999999'))
+                    all_bars_p95.append(bars)
 
-        ax2.set_xlabel('Number of Cores', fontsize=12)
-        ax2.set_ylabel(f'{ylabel} (P95)', fontsize=12)
-        ax2.set_title(f'{metric_name} - P95', fontsize=13, fontweight='bold')
-        ax2.set_xticks(x)
-        ax2.set_xticklabels([f'{cores}c' for cores in plot_data_p95.index])
-        ax2.legend()
-        ax2.grid(axis='y', alpha=0.3)
+            ax2.set_xlabel('Number of Cores', fontsize=12)
+            ax2.set_ylabel(f'{ylabel} (P95)', fontsize=12)
+            ax2.set_title(f'{metric_name} - P95', fontsize=13, fontweight='bold')
+            ax2.set_xticks(x)
+            ax2.set_xticklabels([f'{cores}c' for cores in plot_data_p95.index])
+            ax2.legend()
+            ax2.grid(axis='y', alpha=0.3)
 
-        # Add value labels on bars
-        for bars in all_bars_p95:
-            for bar in bars:
-                height = bar.get_height()
-                if not np.isnan(height):
-                    ax2.text(bar.get_x() + bar.get_width()/2., height,
-                           f'{height:.1f}',
-                           ha='center', va='bottom', fontsize=9)
+            # Add value labels on bars
+            for bars in all_bars_p95:
+                for bar in bars:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                        ax2.text(bar.get_x() + bar.get_width()/2., height,
+                               f'{height:.1f}',
+                               ha='center', va='bottom', fontsize=9)
 
         plt.tight_layout()
         plt.savefig(f'{output_dir}/{mean_col}_comparison.png', dpi=300, bbox_inches='tight')
@@ -263,11 +366,12 @@ def create_comparison_plots(df, output_dir="benchmark_reports"):
         plt.close()
 
     # Create a combined performance overview (Mean values only)
+    # With 5 metrics, use a 2x3 grid (last position will be empty)
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle('Performance Metrics Overview (Mean Values)',
                  fontsize=16, fontweight='bold')
 
-    for idx, (mean_col, p95_col, metric_name, ylabel, higher_is_better) in enumerate(metrics):
+    for idx, (mean_col, p95_col, metric_name, ylabel, higher_is_better, show_p95) in enumerate(metrics):
         ax = axes[idx // 3, idx % 3]
 
         plot_data = best_runs.pivot(index='cores', columns='model', values=mean_col)
@@ -288,48 +392,60 @@ def create_comparison_plots(df, output_dir="benchmark_reports"):
         ax.legend()
         ax.grid(axis='y', alpha=0.3)
 
+    # Hide the last empty subplot
+    axes[1, 2].set_visible(False)
+
     plt.tight_layout()
     plt.savefig(f'{output_dir}/performance_overview.png', dpi=300, bbox_inches='tight')
     print("Saved performance_overview.png")
     plt.close()
 
 def create_summary_tables(df, output_dir="benchmark_reports"):
-    """Create summary tables."""
+    """Create summary tables.
+
+    Note: This function selects ONLY the maximum throughput run from each test
+    (highest load level with worst latency). For full sweep data showing all load
+    levels, use analyze_sweep_curves.py.
+    """
     Path(output_dir).mkdir(exist_ok=True)
 
-    # Get best runs
+    # Get maximum throughput runs (highest throughput run from each test)
+    # For sweep tests, this excludes all other load level data points
     best_runs = df.loc[df.groupby('test_name')['throughput_tokens_sec_mean'].idxmax()]
 
     # Create comprehensive summary tables with both mean and P95
-    summary_mean = best_runs[['model', 'cores', 'requests_sec_mean', 'concurrency_mean',
+    summary_mean = best_runs[['model', 'cores', 'requests_sec_mean',
                                'throughput_tokens_sec_mean', 'ttft_mean', 'tpot_mean',
                                'latency_mean', 'successful_requests']].copy()
 
-    summary_mean.columns = ['Model', 'Cores', 'Req/s (mean)', 'Concurrency (mean)',
-                            'Throughput tok/s (mean)', 'TTFT ms (mean)', 'TPOT ms (mean)',
-                            'Latency s (mean)', 'Successful Reqs']
+    summary_mean.columns = ['Model', 'Cores', 'Req/s (mean)',
+                            'Throughput tok/s (mean)', 'TTFT ms (mean)',
+                            'TPOT ms (mean)', 'Latency s (mean)', 'Successful Reqs']
 
-    summary_p95 = best_runs[['model', 'cores', 'requests_sec_p95', 'concurrency_p95',
+    summary_p95 = best_runs[['model', 'cores', 'requests_sec_p95',
                               'throughput_tokens_sec_p95', 'ttft_p95', 'tpot_p95',
                               'latency_p95']].copy()
 
-    summary_p95.columns = ['Model', 'Cores', 'Req/s (P95)', 'Concurrency (P95)',
-                           'Throughput tok/s (P95)', 'TTFT ms (P95)', 'TPOT ms (P95)',
-                           'Latency s (P95)']
+    summary_p95.columns = ['Model', 'Cores', 'Req/s (P95)',
+                           'Throughput tok/s (P95)', 'TTFT ms (P95)',
+                           'TPOT ms (P95)', 'Latency s (P95)']
 
     # Merge mean and P95 for combined table
-    summary_combined = best_runs[['model', 'cores', 'requests_sec_mean', 'requests_sec_p95',
-                                   'throughput_tokens_sec_mean', 'throughput_tokens_sec_p95',
+    summary_combined = best_runs[['model', 'cores', 'requests_sec_mean',
+                                   'requests_sec_p95',
+                                   'throughput_tokens_sec_mean',
+                                   'throughput_tokens_sec_p95',
                                    'ttft_mean', 'ttft_p95', 'tpot_mean', 'tpot_p95',
-                                   'latency_mean', 'latency_p95', 'concurrency_mean',
+                                   'latency_mean', 'latency_p95',
                                    'successful_requests']].copy()
 
     summary_combined.columns = ['Model', 'Cores', 'Req/s (↑ mean)', 'Req/s (P95)',
-                                 'Throughput tok/s (↑ mean)', 'Throughput tok/s (P95)',
+                                 'Throughput tok/s (↑ mean)',
+                                 'Throughput tok/s (P95)',
                                  'TTFT ms (↓ mean)', 'TTFT ms (P95)',
                                  'TPOT ms (↓ mean)', 'TPOT ms (P95)',
                                  'Latency s (↓ mean)', 'Latency s (P95)',
-                                 'Concurrency (mean)', 'Successful Reqs']
+                                 'Successful Reqs']
 
     summary_combined = summary_combined.sort_values(['Model', 'Cores'])
     summary_mean = summary_mean.sort_values(['Model', 'Cores'])
@@ -373,7 +489,6 @@ def create_summary_tables(df, output_dir="benchmark_reports"):
         'TTFT ms (mean) ↓': 'TTFT ms (mean)',
         'TPOT ms (mean) ↓': 'TPOT ms (mean)',
         'Latency s (mean) ↓': 'Latency s (mean)',
-        'Concurrency (mean)': 'Concurrency (mean)'
     }
 
     metrics_p95 = {
