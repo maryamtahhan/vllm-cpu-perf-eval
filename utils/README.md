@@ -1,206 +1,178 @@
-# Utils
+# Benchmark Analysis Utilities
 
 This directory contains utility scripts for benchmark analysis and reporting.
 
-## Important: Maximum Throughput vs. Full Sweep Analysis
+## Quick Start
 
-The analysis scripts in this directory fall into two categories:
+**For platform comparisons (2 or 3 platforms):**
+```bash
+# Compare two platforms
+python3 utils/create_three_platform_sweep_comparison.py \
+  --platform1-dir /path/to/platform1 --platform1-name "Intel Xeon" \
+  --platform2-dir /path/to/platform2 --platform2-name "AMD EPYC" \
+  --output-dir benchmark_reports
 
-1. **Maximum Throughput Analysis** (analyze_benchmark_results.py, compare_platforms.py)
-   - Selects ONLY the highest throughput run from each test (highest load level)
-   - Shows maximum achievable throughput (but with worst latency)
-   - Provides clean single-number comparisons across core counts
-   - **Limitation**: Does not show how performance varies with load or latency tradeoffs
+# Compare three platforms (legacy mode)
+python3 utils/create_three_platform_sweep_comparison.py \
+  --intel-dir /Users/summarization/xeon-multi-platform \
+  --epyc-zendnn-dir /Users/summarization/epyc-multi-platform-zendnn \
+  --epyc-vllm-dir /Users/summarization/epyc-multi-platform-vllm \
+  --output-dir benchmark_reports_three_platform
+```
 
-2. **Full Sweep Analysis** (analyze_sweep_curves.py, compare_sweep_platforms.py)
-   - Uses ALL data points from sweep tests
-   - Shows complete performance curves as load increases
-   - Reveals saturation behavior and performance degradation
-   - **Use this** to understand how systems perform under varying load levels
+## Active Scripts
 
-When guidellm runs sweep tests, it generates ~8-9 data points per core configuration
-at different load levels. The "maximum throughput" scripts select only the highest
-throughput point (highest load), while the "sweep" scripts use all of them.
+### create_three_platform_sweep_comparison.py
 
-## Scripts
+**Main tool** for comprehensive platform comparisons with percentile analysis.
+
+Generates unified benchmark visualizations for 2 or 3 platforms:
+- Full sweep curves across all platforms and core counts
+- Per-core comparisons showing platform performance side-by-side
+- Latency percentile distributions (P50/P95) for TTFT, TPOT, and Total Latency
+- Throughput percentile distributions (P50/P95)
+- Performance summary tables
+
+**Features:**
+- Extracts P50/P95 percentiles from GuideLL M results
+- Emphasizes P95 (solid lines) over P50 (dashed) to highlight worst-case performance
+- Supports both generic mode (--platform1/2/3) and legacy mode (--intel-dir/--epyc-zendnn-dir)
+- Flexible configuration with custom platform names and colors
+
+**Usage (Generic Mode):**
+```bash
+# Two platforms
+python3 utils/create_three_platform_sweep_comparison.py \
+  --platform1-dir /path/to/platform1 \
+  --platform1-name "Intel Xeon" \
+  --platform1-color "#0071C5" \
+  --platform2-dir /path/to/platform2 \
+  --platform2-name "AMD EPYC" \
+  --platform2-color "#ED1C24" \
+  --output-dir benchmark_reports
+
+# Three platforms
+python3 utils/create_three_platform_sweep_comparison.py \
+  --platform1-dir /path/to/platform1 \
+  --platform1-name "Intel Xeon" \
+  --platform1-color "#0071C5" \
+  --platform2-dir /path/to/platform2 \
+  --platform2-name "EPYC ZenDNN" \
+  --platform2-color "#ED1C24" \
+  --platform3-dir /path/to/platform3 \
+  --platform3-name "EPYC vLLM" \
+  --platform3-color "#00AA00" \
+  --output-dir benchmark_reports
+```
+
+**Usage (Legacy Mode - backward compatible):**
+```bash
+python3 utils/create_three_platform_sweep_comparison.py \
+  --intel-dir /Users/summarization/xeon-multi-platform \
+  --epyc-zendnn-dir /Users/summarization/epyc-multi-platform-zendnn \
+  --epyc-vllm-dir /Users/summarization/epyc-multi-platform-vllm \
+  --output-dir benchmark_reports_three_platform
+```
+
+**Output Files:**
+- `three_platform_sweep_curves_all_cores.png` - Unified sweep curves showing all platforms
+- `comparison_XXcores.png` - Per-core comparison for each core count
+- `percentile_overview_XXcores.png` - Latency P50/P95 for each core count (TTFT, TPOT, Total)
+- `throughput_percentile_XXcores.png` - Throughput P50/P95 for each core count
+- `unified_percentile_overview_ttft.png` - TTFT P50/P95 across all platforms/cores
+- `platform_summary.csv` - Performance summary table (CSV)
+- `platform_summary.txt` - Performance summary table (formatted text)
 
 ### analyze_benchmark_results.py
 
-Analyzes guidellm sweep test results and generates maximum throughput performance
-reports for a single platform.
-
-**⚠️ Important**: This script uses ONLY the maximum throughput run
-(highest load level) from each test. This shows peak throughput but
-worst latency. For full sweep curve analysis showing all load levels
-and latency tradeoffs, use
-[analyze_sweep_curves.py](#analyze_sweep_curvespy) instead.
+Core analysis library used by other scripts. Can also be used standalone for single-platform analysis.
 
 **Usage:**
-
 ```bash
-# From project root - analyze single platform
-python3 utils/analyze_benchmark_results.py /Users/Xeon-multi-platform
+# Analyze single platform
+python3 utils/analyze_benchmark_results.py /path/to/benchmark/results
 
 # Specify custom output directory
-python3 utils/analyze_benchmark_results.py /Users/EPYC-multi-platform \
-  --output-dir benchmark_reports_epyc
+python3 utils/analyze_benchmark_results.py /path/to/results \
+  --output-dir benchmark_reports_custom
 ```
 
 **What it does:**
+- Parses GuideLL M CSV benchmark results
+- Extracts mean and P95 metrics for throughput, latency, TTFT, TPOT
+- Generates visualizations and summary tables
+- Used as a library by create_three_platform_sweep_comparison.py
 
-- Parses guidellm CSV benchmark results
-- Extracts mean and P95 metrics for:
-  - Requests/second
-  - Throughput (tokens/sec)
-  - Time to First Token (TTFT)
-  - Time per Output Token (TPOT)
-  - Request Latency
-- Generates visualizations (PNG charts)
-- Creates summary tables (CSV and TXT)
-- Outputs all reports to specified directory
-
-**Requirements:**
+## Requirements
 
 ```bash
 pip install pandas matplotlib seaborn numpy
 ```
 
-**Full Documentation:**
-See [BENCHMARK_ANALYSIS_GUIDE.md](BENCHMARK_ANALYSIS_GUIDE.md) for complete
-usage instructions, customization options, and troubleshooting.
+## Understanding GuideLL M Sweep Tests
 
-### compare_platforms.py
+GuideLL M sweep tests generate ~8-9 data points per core configuration at different load levels. The scripts in this directory analyze:
 
-Compares maximum throughput performance between Intel Xeon and AMD EPYC platforms.
+1. **Full Sweep Curves** - How performance varies with increasing load
+2. **Percentile Distributions** - P50 (median) and P95 (worst case for 95% of requests)
+3. **Platform Comparisons** - Side-by-side performance across platforms
+4. **Saturation Behavior** - Where and how performance degrades under load
 
-**⚠️ Important**: This script uses ONLY the maximum throughput run
-(highest load level) from each test. This shows peak throughput but worst
-latency for each platform. For full sweep curve comparison showing how
-platforms perform under varying load, use
-[compare_sweep_platforms.py](#compare_sweep_platformspy) instead.
+**Key Metrics:**
+- **Throughput** (tokens/sec) - Higher is better
+- **TTFT** (Time to First Token, ms) - Lower is better
+- **TPOT** (Time per Output Token, ms) - Lower is better
+- **Latency** (Total request latency, sec) - Lower is better
 
-**Usage:**
-
-```bash
-# From project root - use default directories
-python3 utils/compare_platforms.py
-
-# Specify custom directories
-python3 utils/compare_platforms.py \
-  --intel-dir /Users/Xeon-multi-platform \
-  --amd-dir /Users/EPYC-multi-platform \
-  --output-dir benchmark_reports_comparison
-```
-
-**What it does:**
-
-- Loads benchmark results from both Intel and AMD platforms
-- Creates side-by-side comparison charts for all metrics
-- Generates performance ratio analysis at common core counts
-- Shows scaling differences between architectures
-- Outputs all comparison reports to `benchmark_reports_comparison/`
-
-**Output Files:**
-
-- `platform_comparison_overview.png` - 5-panel comparison overview
-- `*_platform_comparison.png` - Individual metric comparisons
-- `platform_comparison_summary.csv` - Combined performance data
-- `platform_comparison_summary.txt` - Formatted summary table
-- `platform_comparison_analysis.txt` - Performance ratio analysis
-
-### analyze_sweep_curves.py
-
-Analyzes full sweep test performance curves showing how metrics vary with load.
-
-**Usage:**
-
-```bash
-# From project root - analyze sweep curves
-python3 utils/analyze_sweep_curves.py /Users/Xeon-multi-platform
-
-# Specify custom output directory
-python3 utils/analyze_sweep_curves.py /Users/EPYC-multi-platform \
-  --output-dir benchmark_reports_sweep_epyc
-```
-
-**What it does:**
-
-- Plots ALL sweep test data points (not just the best run)
-- Shows performance curves as load increases
-- Reveals saturation behavior and performance "knee"
-- Generates efficiency analysis (achieved vs target rate)
-- Creates per-metric load curves for each core configuration
-
-**Output Files:**
-
-- `*_sweep_overview.png` - 4-panel overview of performance curves
-- `*_vs_load.png` - Individual metric curves vs load
-- `*_efficiency_analysis.png` - Load efficiency analysis
-- `sweep_summary.csv` - Summary of sweep test ranges
-- `sweep_summary.txt` - Formatted sweep summary
-
-**Key Difference from analyze_benchmark_results.py:**
-
-The main analysis script selects only the maximum throughput run (highest load,
-worst latency) to compare core counts. This script plots the full sweep curve
-to show how each core configuration performs under varying load levels.
-
-### compare_sweep_platforms.py
-
-Compares full sweep test performance curves between Intel Xeon and AMD EPYC platforms.
-
-**Usage:**
-
-```bash
-# From project root - use default directories
-python3 utils/compare_sweep_platforms.py
-
-# Specify custom directories
-python3 utils/compare_sweep_platforms.py \
-  --intel-dir /Users/Xeon-multi-platform \
-  --amd-dir /Users/EPYC-multi-platform \
-  --output-dir benchmark_reports_sweep_comparison
-```
-
-**What it does:**
-
-- Loads sweep test results from both Intel and AMD platforms
-- Creates side-by-side sweep curve comparisons at common core counts
-- Shows platform-specific sweep curves for all core configurations
-- Generates saturation behavior analysis comparing how platforms handle load
-- Outputs all comparison reports to `benchmark_reports_sweep_comparison/`
-
-**Output Files:**
-
-- `platform_sweep_comparison_<cores>c.png` - Direct comparison at common core counts
-- `platform_sweep_*.png` - Side-by-side sweep curves for each metric
-- `platform_saturation_comparison.png` - Saturation behavior analysis
-- `sweep_comparison_summary.csv` - Combined sweep test summary
-- `sweep_comparison_summary.txt` - Formatted summary table
-
-**Key Difference from compare_platforms.py:**
-
-The regular platform comparison shows only the maximum throughput run from each
-test (highest load, worst latency). This script plots the full sweep curves to
-reveal how each platform's performance varies with load and where saturation occurs.
+**Percentile Interpretation:**
+- **P50 (Median)** - Typical performance, 50% of requests complete within this time/throughput
+- **P95** - Reliability floor, 95% of requests meet this performance level
+  - For throughput (higher is better): P95 < P50 (P95 shows minimum throughput 95% of time)
+  - For latency (lower is better): P95 > P50 (P95 shows maximum latency 95% of time)
 
 ## Directory Structure
 
 ```text
 utils/
-├── README.md                        # This file
-├── BENCHMARK_ANALYSIS_GUIDE.md      # Complete guide for benchmark analysis
-├── analyze_benchmark_results.py    # Single platform analysis script
-├── compare_platforms.py             # Multi-platform comparison script
-├── analyze_sweep_curves.py          # Sweep performance curve analysis
-└── compare_sweep_platforms.py       # Intel vs AMD sweep curve comparison
+├── README.md                                 # This file
+├── BENCHMARK_ANALYSIS_GUIDE.md               # Complete analysis guide
+├── analyze_benchmark_results.py              # Core analysis library
+├── create_three_platform_sweep_comparison.py # Main comparison tool (2 or 3 platforms)
+└── deprecated/                               # Deprecated legacy scripts
+    ├── README.md                             # Documentation for deprecated scripts
+    ├── analyze_sweep_curves.py
+    ├── compare_platforms.py
+    ├── compare_sweep_platforms.py
+    ├── create_executive_summary.py
+    ├── create_key_findings_slide.py
+    ├── create_sweep_bar_charts.py
+    ├── create_sweep_unified_comparison.py
+    └── create_unified_comparison.py
 ```
+
+## Deprecated Scripts
+
+Legacy scripts have been moved to `deprecated/` directory. They are maintained only for reference.
+
+**Use `create_three_platform_sweep_comparison.py` for all new comparisons.**
+
+See [deprecated/README.md](deprecated/README.md) for information about legacy scripts.
+
+## Full Documentation
+
+See [BENCHMARK_ANALYSIS_GUIDE.md](BENCHMARK_ANALYSIS_GUIDE.md) for:
+- Complete usage instructions
+- Customization options
+- Troubleshooting
+- Performance analysis methodology
+- Understanding GuideLL M output formats
 
 ## Adding New Utilities
 
-When adding new utility scripts to this directory:
+When adding new utility scripts:
 
-1. Add a clear docstring at the top of the file
+1. Add clear docstring at the top of the file
 2. Update this README with usage instructions
-3. Add any new dependencies to requirements (if needed)
-4. Follow the existing code style and patterns
+3. Add dependencies to requirements if needed
+4. Follow existing code style and patterns
+5. Consider whether it should be part of the main comparison tool vs. a separate utility
