@@ -41,22 +41,25 @@ sns.set_style("whitegrid")
 
 
 def extract_percentiles_from_str(percentile_str):
-    """Extract P95 from percentile string.
+    """Extract p50, p90, p95, p99 from percentile string.
 
     GuideLL M stores 11 percentiles: [p001, p01, p05, p10, p25, p50, p75, p90, p95, p99, p999]
     Indices: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 
-    We extract P95 for comparison with MEAN (not median/P50).
+    We extract p50, p90, p95, p99 to match GuideLL M HTML output.
     """
     try:
         perc_list = ast.literal_eval(percentile_str)
-        if len(perc_list) >= 9:
+        if len(perc_list) >= 10:
             return {
+                'p50': float(perc_list[5]),  # 50th percentile (median)
+                'p90': float(perc_list[7]),  # 90th percentile
                 'p95': float(perc_list[8]),  # 95th percentile
+                'p99': float(perc_list[9]),  # 99th percentile
             }
-        return {'p95': None}
+        return {'p50': None, 'p90': None, 'p95': None, 'p99': None}
     except:
-        return {'p95': None}
+        return {'p50': None, 'p90': None, 'p95': None, 'p99': None}
 
 
 def load_results_with_percentiles(base_path):
@@ -111,10 +114,22 @@ def load_results_with_percentiles(base_path):
                     'cores': cores,
                     'requests_sec_mean': float(req_sec),
                     'row_index': idx,
+                    'ttft_p50': ttft_percs['p50'],
+                    'ttft_p90': ttft_percs['p90'],
                     'ttft_p95': ttft_percs['p95'],
+                    'ttft_p99': ttft_percs['p99'],
+                    'tpot_p50': tpot_percs['p50'],
+                    'tpot_p90': tpot_percs['p90'],
                     'tpot_p95': tpot_percs['p95'],
+                    'tpot_p99': tpot_percs['p99'],
+                    'latency_p50': latency_percs['p50'],
+                    'latency_p90': latency_percs['p90'],
                     'latency_p95': latency_percs['p95'],
+                    'latency_p99': latency_percs['p99'],
+                    'throughput_p50': throughput_percs['p50'],
+                    'throughput_p90': throughput_percs['p90'],
                     'throughput_p95': throughput_percs['p95'],
+                    'throughput_p99': throughput_percs['p99'],
                 })
 
         except Exception as e:
@@ -136,7 +151,10 @@ def load_results_with_percentiles(base_path):
             df = df.drop(columns=cols_to_drop)
 
         df = df.merge(perc_df[['test_name', 'row_index',
-                                'ttft_p95', 'tpot_p95', 'latency_p95', 'throughput_p95']],
+                                'ttft_p50', 'ttft_p90', 'ttft_p95', 'ttft_p99',
+                                'tpot_p50', 'tpot_p90', 'tpot_p95', 'tpot_p99',
+                                'latency_p50', 'latency_p90', 'latency_p95', 'latency_p99',
+                                'throughput_p50', 'throughput_p90', 'throughput_p95', 'throughput_p99']],
                       on=['test_name', 'row_index'], how='left')
         # Drop the row_index column as it's no longer needed
         df = df.drop(columns=['row_index'])
@@ -370,7 +388,9 @@ def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_th
 
 def create_throughput_percentile_overview(platforms,
                                          output_dir="benchmark_reports_three_platform"):
-    """Create throughput MEAN, P95 percentile overview for all platforms.
+    """Create throughput percentile overview showing MEAN, p50, p90, p95, p99 for all platforms.
+
+    Matches GuideLL M HTML output format with multiple percentile curves.
 
     Args:
         platforms: Dictionary of platform info with 'name', 'df', 'color', 'label_prefix'
@@ -384,14 +404,14 @@ def create_throughput_percentile_overview(platforms,
         all_cores |= set(platform_info['df']['cores'].unique())
     all_cores = sorted(all_cores)
 
-    # Create one figure per core count showing throughput MEAN/P95
+    # Create one figure per core count showing throughput percentiles
     for cores in all_cores:
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        fig.suptitle(f'{cores}-Core Configuration: Throughput Distribution (MEAN / P95)\n' +
-                     'Higher is Better',
+        fig, ax = plt.subplots(1, 1, figsize=(14, 9))
+        fig.suptitle(f'{cores}-Core Configuration: Throughput Percentile Distribution\n' +
+                     'Higher is Better - Shows Saturation Behavior',
                      fontsize=18, fontweight='bold', y=0.98)
 
-        # Plot each platform with MEAN, P95 for throughput
+        # Plot each platform with multiple percentiles
         for platform_name, platform_info in platforms.items():
             df = platform_info['df']
             color = platform_info['color']
@@ -400,28 +420,43 @@ def create_throughput_percentile_overview(platforms,
             core_data = df[df['cores'] == cores].sort_values('requests_sec_mean')
 
             if len(core_data) > 0:
-                # Use MEAN and P95 columns for throughput
-                mean_col = 'throughput_tokens_sec_mean'
-                p95_col = 'throughput_p95'
-
-                if mean_col in core_data.columns and p95_col in core_data.columns:
-                    # Plot P95 (solid - emphasized), MEAN (dashed)
+                # Check if all percentile columns exist
+                required_cols = ['throughput_tokens_sec_mean', 'throughput_p50',
+                               'throughput_p90', 'throughput_p95', 'throughput_p99']
+                if all(col in core_data.columns for col in required_cols):
+                    # Plot percentiles - p99 thickest (most important for saturation)
                     ax.plot(core_data['requests_sec_mean'],
-                           core_data[p95_col],
+                           core_data['throughput_p99'],
+                           marker='D', linestyle='-', linewidth=3.5,
+                           markersize=7, color=color, alpha=0.95,
+                           label=f'{platform_name} p99')
+                    ax.plot(core_data['requests_sec_mean'],
+                           core_data['throughput_p95'],
                            marker='s', linestyle='-', linewidth=3,
-                           markersize=7, color=color, alpha=0.9,
-                           label=f'{platform_name} P95')
+                           markersize=6, color=color, alpha=0.9,
+                           label=f'{platform_name} p95')
                     ax.plot(core_data['requests_sec_mean'],
-                           core_data[mean_col],
-                           marker='o', linestyle='--', linewidth=2.5,
-                           markersize=6, color=color, alpha=0.7,
-                           label=f'{platform_name} MEAN')
+                           core_data['throughput_p90'],
+                           marker='^', linestyle='-', linewidth=2.5,
+                           markersize=5, color=color, alpha=0.85,
+                           label=f'{platform_name} p90')
+                    ax.plot(core_data['requests_sec_mean'],
+                           core_data['throughput_p50'],
+                           marker='o', linestyle='--', linewidth=2,
+                           markersize=5, color=color, alpha=0.7,
+                           label=f'{platform_name} p50 (median)')
+                    ax.plot(core_data['requests_sec_mean'],
+                           core_data['throughput_tokens_sec_mean'],
+                           marker='x', linestyle=':', linewidth=2,
+                           markersize=6, color=color, alpha=0.6,
+                           label=f'{platform_name} mean')
 
         ax.set_xlabel('Load (Requests/sec)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Throughput (tokens/sec)', fontsize=13, fontweight='bold')
-        ax.set_title('Throughput Distribution Across Load Levels',
-                     fontsize=15, fontweight='bold', pad=15)
-        ax.legend(loc='best', fontsize=11, ncol=1, framealpha=0.95)
+        ax.set_title('Throughput Percentiles Across Load Levels\n' +
+                     'Divergence shows saturation and variability under load',
+                     fontsize=14, fontweight='bold', pad=15)
+        ax.legend(loc='best', fontsize=9, ncol=2, framealpha=0.95)
         ax.grid(True, alpha=0.3, linestyle='--')
 
         plt.tight_layout()
