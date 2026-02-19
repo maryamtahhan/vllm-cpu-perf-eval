@@ -130,6 +130,11 @@ def load_results_with_percentiles(base_path):
 
     # Merge with main DataFrame on test_name and row_index
     if len(perc_df) > 0:
+        # Drop existing P95 columns from load_all_results to avoid _x/_y suffixes
+        cols_to_drop = [col for col in df.columns if col.endswith('_p95')]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
         df = df.merge(perc_df[['test_name', 'row_index',
                                 'ttft_p95', 'tpot_p95', 'latency_p95', 'throughput_p95']],
                       on=['test_name', 'row_index'], how='left')
