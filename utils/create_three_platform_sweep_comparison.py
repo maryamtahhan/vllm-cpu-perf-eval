@@ -5,7 +5,7 @@ Create unified sweep-based comparisons for 2 or 3 platforms.
 This script generates comprehensive visualizations showing platform comparisons:
 1. Full sweep curves with all platforms and all core counts
 2. Per-core comparison showing all platforms side by side
-3. Percentile distributions (P50/P95) for latency and throughput metrics
+3. Percentile distributions (MEAN/P95) for latency and throughput metrics
 
 Supports comparing 2 or 3 platforms dynamically. Common configurations:
 - Intel Xeon vs AMD EPYC (2 platforms)
@@ -41,33 +41,34 @@ sns.set_style("whitegrid")
 
 
 def extract_percentiles_from_str(percentile_str):
-    """Extract P50, P90, P95 from percentile string.
+    """Extract P95 from percentile string.
 
     GuideLL M stores 11 percentiles: [p001, p01, p05, p10, p25, p50, p75, p90, p95, p99, p999]
     Indices: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+
+    We extract P95 for comparison with MEAN (not median/P50).
     """
     try:
         perc_list = ast.literal_eval(percentile_str)
         if len(perc_list) >= 9:
             return {
-                'p50': float(perc_list[5]),  # Median
-                'p90': float(perc_list[7]),  # 90th percentile
                 'p95': float(perc_list[8]),  # 95th percentile
             }
-        return {'p50': None, 'p90': None, 'p95': None}
+        return {'p95': None}
     except:
-        return {'p50': None, 'p90': None, 'p95': None}
+        return {'p95': None}
 
 
 def load_results_with_percentiles(base_path):
-    """Load benchmark results including P50, P90, P95 percentiles.
+    """Load benchmark results including P95 percentiles.
 
-    Note: load_all_results already loads P95, we just need to add P50 and P90.
+    Note: The main DataFrame already has MEAN values for all metrics.
+    We only need to extract P95 percentiles for comparison.
     """
-    # First load the standard results (includes P95)
+    # First load the standard results (includes MEAN for all metrics)
     df = load_all_results(base_path=base_path)
 
-    # Now add P50 and P90 percentile data by re-reading CSV files
+    # Now add P95 percentile data by re-reading CSV files
     all_test_dirs = [d for d in Path(base_path).iterdir() if d.is_dir()]
 
     percentile_rows = []
@@ -93,7 +94,7 @@ def load_results_with_percentiles(base_path):
                 # Get request rate
                 req_sec = row[('Server Throughput', 'Successful Requests/Sec', 'Mean')]
 
-                # Extract P50 and P90 for latency metrics
+                # Extract P95 for latency metrics
                 ttft_percs = extract_percentiles_from_str(
                     row[('Time to First Token', 'Successful ms', 'Percentiles')])
                 tpot_percs = extract_percentiles_from_str(
@@ -101,7 +102,7 @@ def load_results_with_percentiles(base_path):
                 latency_percs = extract_percentiles_from_str(
                     row[('Request Latency', 'Successful Sec', 'Percentiles')])
 
-                # Extract throughput percentiles
+                # Extract throughput P95
                 throughput_percs = extract_percentiles_from_str(
                     row[('Token Throughput', 'Successful Output Tokens/Sec', 'Percentiles')])
 
@@ -110,14 +111,9 @@ def load_results_with_percentiles(base_path):
                     'cores': cores,
                     'requests_sec_mean': float(req_sec),
                     'row_index': idx,
-                    'ttft_p50': ttft_percs['p50'],
-                    'ttft_p90': ttft_percs['p90'],
-                    'tpot_p50': tpot_percs['p50'],
-                    'tpot_p90': tpot_percs['p90'],
-                    'latency_p50': latency_percs['p50'],
-                    'latency_p90': latency_percs['p90'],
-                    'throughput_p50': throughput_percs['p50'],
-                    'throughput_p90': throughput_percs['p90'],
+                    'ttft_p95': ttft_percs['p95'],
+                    'tpot_p95': tpot_percs['p95'],
+                    'latency_p95': latency_percs['p95'],
                     'throughput_p95': throughput_percs['p95'],
                 })
 
@@ -134,10 +130,8 @@ def load_results_with_percentiles(base_path):
 
     # Merge with main DataFrame on test_name and row_index
     if len(perc_df) > 0:
-        df = df.merge(perc_df[['test_name', 'row_index', 'ttft_p50', 'ttft_p90',
-                                'tpot_p50', 'tpot_p90',
-                                'latency_p50', 'latency_p90',
-                                'throughput_p50', 'throughput_p90', 'throughput_p95']],
+        df = df.merge(perc_df[['test_name', 'row_index',
+                                'ttft_p95', 'tpot_p95', 'latency_p95', 'throughput_p95']],
                       on=['test_name', 'row_index'], how='left')
         # Drop the row_index column as it's no longer needed
         df = df.drop(columns=['row_index'])
@@ -297,7 +291,7 @@ def create_per_core_comparison(platforms, output_dir="benchmark_reports_three_pl
 
 
 def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_three_platform"):
-    """Create P50, P95 percentile sweep overview showing latency distributions.
+    """Create MEAN, P95 percentile sweep overview showing latency distributions.
 
     Args:
         platforms: Dictionary of platform info with 'name', 'df', 'color', 'label_prefix'
@@ -311,10 +305,10 @@ def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_th
         all_cores |= set(platform_info['df']['cores'].unique())
     all_cores = sorted(all_cores)
 
-    # Create one figure per core count showing P50/P95 for all platforms
+    # Create one figure per core count showing MEAN/P95 for all platforms
     for cores in all_cores:
         fig, axes = plt.subplots(1, 3, figsize=(24, 7))
-        fig.suptitle(f'{cores}-Core Configuration: Latency Percentile Distribution (P50 / P95)\n' +
+        fig.suptitle(f'{cores}-Core Configuration: Latency Distribution (MEAN / P95)\n' +
                      'Lower is Better for All Metrics',
                      fontsize=18, fontweight='bold', y=0.98)
 
@@ -328,7 +322,7 @@ def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_th
         for idx, (metric_prefix, ylabel, title) in enumerate(metrics):
             ax = axes[idx]
 
-            # Plot each platform with P50, P95
+            # Plot each platform with MEAN, P95
             for platform_name, platform_info in platforms.items():
                 df = platform_info['df']
                 color = platform_info['color']
@@ -337,22 +331,22 @@ def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_th
                 core_data = df[df['cores'] == cores].sort_values('requests_sec_mean')
 
                 if len(core_data) > 0:
-                    # Check if percentile columns exist
-                    p50_col = f'{metric_prefix}_p50'
+                    # Use MEAN and P95 columns
+                    mean_col = f'{metric_prefix}_mean'
                     p95_col = f'{metric_prefix}_p95'
 
-                    if p50_col in core_data.columns:
-                        # Plot P95 (solid - emphasized), P50 (dashed)
+                    if mean_col in core_data.columns and p95_col in core_data.columns:
+                        # Plot P95 (solid - emphasized), MEAN (dashed)
                         ax.plot(core_data['requests_sec_mean'],
                                core_data[p95_col],
                                marker='s', linestyle='-', linewidth=2.5,
                                markersize=7, color=color, alpha=0.9,
                                label=f'{platform_name} P95')
                         ax.plot(core_data['requests_sec_mean'],
-                               core_data[p50_col],
+                               core_data[mean_col],
                                marker='o', linestyle='--', linewidth=2,
                                markersize=6, color=color, alpha=0.7,
-                               label=f'{platform_name} P50 (Median)')
+                               label=f'{platform_name} MEAN')
 
             ax.set_xlabel('Load (Requests/sec)', fontsize=11, fontweight='bold')
             ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
@@ -371,7 +365,7 @@ def create_percentile_sweep_overview(platforms, output_dir="benchmark_reports_th
 
 def create_throughput_percentile_overview(platforms,
                                          output_dir="benchmark_reports_three_platform"):
-    """Create throughput P50, P95 percentile overview for all platforms.
+    """Create throughput MEAN, P95 percentile overview for all platforms.
 
     Args:
         platforms: Dictionary of platform info with 'name', 'df', 'color', 'label_prefix'
@@ -385,14 +379,14 @@ def create_throughput_percentile_overview(platforms,
         all_cores |= set(platform_info['df']['cores'].unique())
     all_cores = sorted(all_cores)
 
-    # Create one figure per core count showing throughput P50/P95
+    # Create one figure per core count showing throughput MEAN/P95
     for cores in all_cores:
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        fig.suptitle(f'{cores}-Core Configuration: Throughput Percentile Distribution (P50 / P95)\n' +
+        fig.suptitle(f'{cores}-Core Configuration: Throughput Distribution (MEAN / P95)\n' +
                      'Higher is Better',
                      fontsize=18, fontweight='bold', y=0.98)
 
-        # Plot each platform with P50, P95 for throughput
+        # Plot each platform with MEAN, P95 for throughput
         for platform_name, platform_info in platforms.items():
             df = platform_info['df']
             color = platform_info['color']
@@ -401,19 +395,22 @@ def create_throughput_percentile_overview(platforms,
             core_data = df[df['cores'] == cores].sort_values('requests_sec_mean')
 
             if len(core_data) > 0:
-                # Check if throughput percentile columns exist
-                if 'throughput_p50' in core_data.columns:
-                    # Plot P95 (solid - emphasized), P50 (dashed)
+                # Use MEAN and P95 columns for throughput
+                mean_col = 'throughput_tokens_sec_mean'
+                p95_col = 'throughput_p95'
+
+                if mean_col in core_data.columns and p95_col in core_data.columns:
+                    # Plot P95 (solid - emphasized), MEAN (dashed)
                     ax.plot(core_data['requests_sec_mean'],
-                           core_data['throughput_p95'],
+                           core_data[p95_col],
                            marker='s', linestyle='-', linewidth=3,
                            markersize=7, color=color, alpha=0.9,
                            label=f'{platform_name} P95')
                     ax.plot(core_data['requests_sec_mean'],
-                           core_data['throughput_p50'],
+                           core_data[mean_col],
                            marker='o', linestyle='--', linewidth=2.5,
                            markersize=6, color=color, alpha=0.7,
-                           label=f'{platform_name} P50 (Median)')
+                           label=f'{platform_name} MEAN')
 
         ax.set_xlabel('Load (Requests/sec)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Throughput (tokens/sec)', fontsize=13, fontweight='bold')
@@ -451,19 +448,18 @@ def create_unified_percentile_overview(platforms,
     core_styles = {16: '-', 32: '--', 64: '-.', 96: ':'}
     core_markers = {16: 'o', 32: 's', 64: '^', 96: 'D'}
 
-    # Create figure showing P50, P95 for one key metric (TTFT)
+    # Create figure showing MEAN, P95 for one key metric (TTFT)
     fig, axes = plt.subplots(1, 2, figsize=(20, 7))
-    fig.suptitle('Time to First Token (TTFT) Percentile Distribution\n' +
+    fig.suptitle('Time to First Token (TTFT) Distribution\n' +
                  'All Platforms and Core Counts - Lower is Better',
                  fontsize=18, fontweight='bold', y=0.98)
 
-    percentiles = ['p50', 'p95']
-    percentile_titles = ['P50 (Median) - 50% of requests complete within this time',
-                        'P95 - 95% of requests complete within this time']
+    metrics = [('mean', 'MEAN - Average time to first token'),
+               ('p95', 'P95 - 95% of requests complete within this time')]
 
-    for perc_idx, (perc, perc_title) in enumerate(zip(percentiles, percentile_titles)):
-        ax = axes[perc_idx]
-        col_name = f'ttft_{perc}'
+    for metric_idx, (metric, metric_title) in enumerate(metrics):
+        ax = axes[metric_idx]
+        col_name = f'ttft_{metric}'
 
         # Plot each platform and core count
         for platform_name, platform_info in platforms.items():
@@ -487,7 +483,7 @@ def create_unified_percentile_overview(platforms,
 
         ax.set_xlabel('Load (Requests/sec)', fontsize=12, fontweight='bold')
         ax.set_ylabel('TTFT (ms)', fontsize=12, fontweight='bold')
-        ax.set_title(perc_title, fontsize=12, fontweight='bold', pad=10)
+        ax.set_title(metric_title, fontsize=12, fontweight='bold', pad=10)
         ax.legend(loc='best', fontsize=8, ncol=2, framealpha=0.95)
         ax.grid(True, alpha=0.3, linestyle='--')
 
@@ -780,12 +776,12 @@ def main():
     create_summary_table(platforms, output_dir=args.output_dir)
 
     print("\n" + "=" * 80)
-    print("Creating latency percentile sweep overviews (P50/P95)...")
+    print("Creating latency percentile sweep overviews (MEAN/P95)...")
     print("=" * 80)
     create_percentile_sweep_overview(platforms, output_dir=args.output_dir)
 
     print("\n" + "=" * 80)
-    print("Creating throughput percentile overviews (P50/P95)...")
+    print("Creating throughput percentile overviews (MEAN/P95)...")
     print("=" * 80)
     create_throughput_percentile_overview(platforms, output_dir=args.output_dir)
 
@@ -800,9 +796,9 @@ def main():
     print("\nGenerated files:")
     print("  - three_platform_sweep_curves_all_cores.png")
     print("  - comparison_XXcores.png (for each core count)")
-    print("  - percentile_overview_XXcores.png (latency P50/P95 for each core count)")
-    print("  - throughput_percentile_XXcores.png (throughput P50/P95 for each core count)")
-    print("  - unified_percentile_overview_ttft.png (all platforms/cores TTFT P50/P95)")
+    print("  - percentile_overview_XXcores.png (latency MEAN/P95 for each core count)")
+    print("  - throughput_percentile_XXcores.png (throughput MEAN/P95 for each core count)")
+    print("  - unified_percentile_overview_ttft.png (all platforms/cores TTFT MEAN/P95)")
     print("  - platform_summary.csv")
     print("  - platform_summary.txt")
     print("=" * 80)
