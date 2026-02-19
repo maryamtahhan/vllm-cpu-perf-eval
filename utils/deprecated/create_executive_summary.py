@@ -26,13 +26,15 @@ from analyze_benchmark_results import load_all_results
 sns.set_style("white")
 
 
-def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_unified"):
+def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_unified",
+                            platform1_label="Intel Xeon", platform2_label="AMD EPYC",
+                            platform1_color='#0071C5', platform2_color='#ED1C24'):
     """Create executive summary slide for non-technical audience."""
     Path(output_dir).mkdir(exist_ok=True)
 
     # Colors
-    intel_color = '#0071C5'
-    amd_color = '#ED1C24'
+    intel_color = platform1_color
+    amd_color = platform2_color
     good_color = '#2ECC71'
     caution_color = '#F39C12'
 
@@ -49,7 +51,7 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
     title_ax.text(0.5, 0.5, 'Executive Summary: LLM Inference Performance Evaluation',
                   ha='center', va='center', fontsize=26, fontweight='bold',
                   color='#2C3E50')
-    title_ax.text(0.5, 0.1, 'Intel Xeon vs AMD EPYC Platform Comparison',
+    title_ax.text(0.5, 0.1, f'{platform1_label} vs {platform2_label} Platform Comparison',
                   ha='center', va='center', fontsize=16, color='#7F8C8D')
 
     # ============================================================
@@ -65,12 +67,27 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
                           facecolor='#E8F8F5', edgecolor='#2ECC71', linewidth=3)
     bottom_line_ax.add_patch(rect)
 
-    bottom_line_text = """
+    # Determine which platform is better
+    intel_96c = intel_df[intel_df['cores'] == 96]
+    amd_96c = amd_df[amd_df['cores'] == 96]
+    intel_throughput_max = intel_96c['throughput_tokens_sec_mean'].max()
+    amd_throughput_max = amd_96c['throughput_tokens_sec_mean'].max()
+
+    if intel_throughput_max > amd_throughput_max:
+        winner = platform1_label
+        loser = platform2_label
+        max_throughput = intel_throughput_max
+    else:
+        winner = platform2_label
+        loser = platform1_label
+        max_throughput = amd_throughput_max
+
+    bottom_line_text = f"""
     THE BOTTOM LINE
 
-    ✓  Intel Xeon consistently outperforms AMD EPYC across all configurations tested
+    ✓  {winner} consistently outperforms {loser} across all configurations tested
 
-    ✓  Best performance: 96-core Intel Xeon delivers ~790 tokens/second with low latency
+    ✓  Best performance: 96-core {winner} delivers ~{max_throughput:.0f} tokens/second with low latency
 
     ✓  Sweet spot: 64-core configuration provides excellent balance of speed and efficiency
 
@@ -95,12 +112,12 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
                           facecolor='white', edgecolor='#BDC3C7', linewidth=2)
     what_ax.add_patch(rect)
 
-    what_text = """WHAT WE MEASURED
+    what_text = f"""WHAT WE MEASURED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊  Configuration Range
     • 16 to 96 CPU cores
-    • Both Intel Xeon and AMD EPYC platforms
+    • Both {platform1_label} and {platform2_label} platforms
     • Multiple load levels (light to heavy usage)
 
 ⚡  Performance Metrics
@@ -133,32 +150,35 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
     findings_ax.add_patch(rect)
 
     # Calculate actual performance advantage
-    intel_96c = intel_df[intel_df['cores'] == 96]
-    amd_96c = amd_df[amd_df['cores'] == 96]
-
-    intel_throughput_max = intel_96c['throughput_tokens_sec_mean'].max()
-    amd_throughput_max = amd_96c['throughput_tokens_sec_mean'].max()
-    throughput_advantage = ((intel_throughput_max - amd_throughput_max) / amd_throughput_max) * 100
-
     intel_ttft_min = intel_df['ttft_mean'].min()
     amd_ttft_min = amd_df['ttft_mean'].min()
-    latency_advantage = ((amd_ttft_min - intel_ttft_min) / amd_ttft_min) * 100
+
+    if intel_throughput_max > amd_throughput_max:
+        throughput_advantage = ((intel_throughput_max - amd_throughput_max) / amd_throughput_max) * 100
+        latency_advantage = ((amd_ttft_min - intel_ttft_min) / amd_ttft_min) * 100
+        better_platform = platform1_label
+        worse_platform = platform2_label
+    else:
+        throughput_advantage = ((amd_throughput_max - intel_throughput_max) / intel_throughput_max) * 100
+        latency_advantage = ((intel_ttft_min - amd_ttft_min) / intel_ttft_min) * 100
+        better_platform = platform2_label
+        worse_platform = platform1_label
 
     findings_text = f"""KEY FINDINGS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1️⃣  Performance Winner
-    Intel Xeon delivers {throughput_advantage:.0f}% higher throughput
+    {better_platform} delivers {throughput_advantage:.0f}% higher throughput
     at peak capacity (96-core configuration)
 
 2️⃣  Response Speed
-    Intel shows {latency_advantage:.0f}% faster initial response times
+    {better_platform} shows {latency_advantage:.0f}% faster initial response times
     Critical for real-time applications
 
 3️⃣  Operating Range Matters
     • Light load: Both platforms perform well
-    • Medium load: Intel pulls ahead
-    • Heavy load: Intel maintains advantage
+    • Medium load: {better_platform} pulls ahead
+    • Heavy load: {better_platform} maintains advantage
 
 4️⃣  Efficiency vs Capacity
     • 64 cores: Best efficiency per core
@@ -209,9 +229,9 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
     intel_normalized = [p / intel_baseline * 100 for p in intel_perf]
     amd_normalized = [p / amd_baseline * 100 for p in amd_perf]
 
-    bars1 = visual_ax.bar(x - width/2, intel_normalized, width, label='Intel Xeon',
+    bars1 = visual_ax.bar(x - width/2, intel_normalized, width, label=platform1_label,
                           alpha=0.9, color=intel_color, edgecolor='black', linewidth=1)
-    bars2 = visual_ax.bar(x + width/2, amd_normalized, width, label='AMD EPYC',
+    bars2 = visual_ax.bar(x + width/2, amd_normalized, width, label=platform2_label,
                           alpha=0.9, color=amd_color, edgecolor='black', linewidth=1)
 
     # Add value labels
@@ -247,19 +267,19 @@ def create_executive_summary(intel_df, amd_df, output_dir="benchmark_reports_uni
                           facecolor='#FFF9E6', edgecolor='#F39C12', linewidth=2)
     rec_ax.add_patch(rect)
 
-    recommendations_text = """RECOMMENDATIONS
+    recommendations_text = f"""RECOMMENDATIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 For Real-Time Applications (Chatbots, Live Assistance)
-→ Intel Xeon 64 or 96 cores
+→ {better_platform} 64 or 96 cores
    Reason: Fastest response times, critical for user experience
 
 For High-Volume Batch Processing
-→ Intel Xeon 96 cores
+→ {better_platform} 96 cores
    Reason: Maximum throughput for processing large workloads
 
 For Cost-Conscious Deployments
-→ Intel Xeon or AMD EPYC 32 cores
+→ {better_platform} or {worse_platform} 32 cores
    Reason: Good performance at lower cost point
 
 For Development/Testing
@@ -297,12 +317,14 @@ For Development/Testing
     plt.close()
 
 
-def create_simple_one_pager(intel_df, amd_df, output_dir="benchmark_reports_unified"):
+def create_simple_one_pager(intel_df, amd_df, output_dir="benchmark_reports_unified",
+                           platform1_label="Intel Xeon", platform2_label="AMD EPYC",
+                           platform1_color='#0071C5', platform2_color='#ED1C24'):
     """Create ultra-simple one-page summary with minimal text."""
     Path(output_dir).mkdir(exist_ok=True)
 
-    intel_color = '#0071C5'
-    amd_color = '#ED1C24'
+    intel_color = platform1_color
+    amd_color = platform2_color
 
     fig = plt.figure(figsize=(20, 12))
     fig.patch.set_facecolor('white')
@@ -323,11 +345,17 @@ def create_simple_one_pager(intel_df, amd_df, output_dir="benchmark_reports_unif
     amd_96c = amd_df[amd_df['cores'] == 96]
     intel_max = intel_96c['throughput_tokens_sec_mean'].max()
     amd_max = amd_96c['throughput_tokens_sec_mean'].max()
-    advantage = ((intel_max - amd_max) / amd_max) * 100
+
+    if intel_max > amd_max:
+        winner = platform1_label
+        advantage = ((intel_max - amd_max) / amd_max) * 100
+    else:
+        winner = platform2_label
+        advantage = ((amd_max - intel_max) / intel_max) * 100
 
     winner_text = f"""
 
-    🏆  PERFORMANCE WINNER: Intel Xeon
+    🏆  PERFORMANCE WINNER: {winner}
 
     Delivers {advantage:.0f}% better performance at peak capacity
     Consistently faster across all configurations tested
@@ -368,9 +396,9 @@ def create_simple_one_pager(intel_df, amd_df, output_dir="benchmark_reports_unif
         else:
             amd_speeds.append(0)
 
-    bars1 = ax2.bar(x - width/2, intel_speeds, width, label='Intel Xeon',
+    bars1 = ax2.bar(x - width/2, intel_speeds, width, label=platform1_label,
                     color=intel_color, alpha=0.9, edgecolor='black', linewidth=1.5)
-    bars2 = ax2.bar(x + width/2, amd_speeds, width, label='AMD EPYC',
+    bars2 = ax2.bar(x + width/2, amd_speeds, width, label=platform2_label,
                     color=amd_color, alpha=0.9, edgecolor='black', linewidth=1.5)
 
     # Add values on bars
@@ -394,14 +422,17 @@ def create_simple_one_pager(intel_df, amd_df, output_dir="benchmark_reports_unif
     ax3 = fig.add_subplot(gs[2])
     ax3.axis('off')
 
-    guide_text = """
+    # Determine alternative platform
+    alt_platform = platform2_label if winner == platform1_label else platform1_label
+
+    guide_text = f"""
     QUICK SELECTION GUIDE
 
-    Need fastest response times?  →  Intel Xeon 64-96 cores
+    Need fastest response times?  →  {winner} 64-96 cores
 
-    Processing large batches?     →  Intel Xeon 96 cores
+    Processing large batches?     →  {winner} 96 cores
 
-    Budget constrained?           →  Intel Xeon or AMD EPYC 32 cores
+    Budget constrained?           →  {winner} or {alt_platform} 32 cores
 
     Small-scale testing?          →  Either platform 16-32 cores
     """
@@ -428,6 +459,14 @@ def parse_args():
     parser.add_argument('--intel-dir', default='/Users/summarization/xeon-multi-platform')
     parser.add_argument('--amd-dir', default='/Users/summarization/epyc-multi-platform-zendnn')
     parser.add_argument('--output-dir', default='benchmark_reports_unified')
+    parser.add_argument('--platform1-label', default='Intel Xeon',
+                       help='Label for first platform')
+    parser.add_argument('--platform2-label', default='AMD EPYC',
+                       help='Label for second platform')
+    parser.add_argument('--platform1-color', default='#0071C5',
+                       help='Color for first platform (default: Intel blue)')
+    parser.add_argument('--platform2-color', default='#ED1C24',
+                       help='Color for second platform (default: AMD red)')
 
     return parser.parse_args()
 
@@ -449,10 +488,18 @@ def main():
     print(f"Loaded {len(amd_df)} AMD runs")
 
     print("\nCreating detailed executive summary...")
-    create_executive_summary(intel_df, amd_df, output_dir=args.output_dir)
+    create_executive_summary(intel_df, amd_df, output_dir=args.output_dir,
+                            platform1_label=args.platform1_label,
+                            platform2_label=args.platform2_label,
+                            platform1_color=args.platform1_color,
+                            platform2_color=args.platform2_color)
 
     print("\nCreating simple one-pager...")
-    create_simple_one_pager(intel_df, amd_df, output_dir=args.output_dir)
+    create_simple_one_pager(intel_df, amd_df, output_dir=args.output_dir,
+                           platform1_label=args.platform1_label,
+                           platform2_label=args.platform2_label,
+                           platform1_color=args.platform1_color,
+                           platform2_color=args.platform2_color)
 
     print("\n" + "=" * 80)
     print("Executive summaries complete!")
