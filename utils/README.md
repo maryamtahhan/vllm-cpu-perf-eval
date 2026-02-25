@@ -29,13 +29,16 @@ python3 utils/create_three_platform_sweep_comparison.py \
 Generates unified benchmark visualizations for 2 or 3 platforms:
 - Full sweep curves across all platforms and core counts
 - Per-core comparisons showing platform performance side-by-side
-- Latency percentile distributions (P50/P95) for TTFT, TPOT, and Total Latency
-- Throughput percentile distributions (P50/P95)
+- **Latency percentile sweep graphs** (p50, p90, p95, p99) showing saturation behavior
+- **Latency simple graphs** (MEAN/P95) for quick comparison
+- **Throughput percentile sweep graphs** (p50, p90, p95, p99) showing saturation behavior
+- **Throughput simple graphs** (MEAN/P95) for quick comparison
 - Performance summary tables
 
 **Features:**
-- Extracts P50/P95 percentiles from GuideLL M results
-- Emphasizes P95 (solid lines) over P50 (dashed) to highlight worst-case performance
+- Extracts p50, p90, p95, p99 percentiles from GuideLL M results
+- Percentile sweep graphs match GuideLL M HTML output format with 4 curves
+- Simple graphs emphasize P95 (solid lines) and MEAN (dashed) for quick insights
 - Supports both generic mode (--platform1/2/3) and legacy mode (--intel-dir/--epyc-zendnn-dir)
 - Flexible configuration with custom platform names and colors
 
@@ -77,9 +80,13 @@ python3 utils/create_three_platform_sweep_comparison.py \
 **Output Files:**
 - `three_platform_sweep_curves_all_cores.png` - Unified sweep curves showing all platforms
 - `comparison_XXcores.png` - Per-core comparison for each core count
-- `percentile_overview_XXcores.png` - Latency P50/P95 for each core count (TTFT, TPOT, Total)
-- `throughput_percentile_XXcores.png` - Throughput P50/P95 for each core count
-- `unified_percentile_overview_ttft.png` - TTFT P50/P95 across all platforms/cores
+- **Latency Graphs:**
+  - `percentile_overview_XXcores.png` - Latency percentile sweep (p50, p90, p95, p99) for TTFT, TPOT, Total Latency
+  - `latency_simple_XXcores.png` - Latency MEAN/P95 comparison for quick insights
+- **Throughput Graphs:**
+  - `throughput_percentile_XXcores.png` - Throughput percentile sweep (p50, p90, p95, p99)
+  - `throughput_simple_XXcores.png` - Throughput MEAN/P95 comparison for quick insights
+- `unified_percentile_overview_ttft.png` - TTFT MEAN/P95 across all platforms/cores
 - `platform_summary.csv` - Performance summary table (CSV)
 - `platform_summary.txt` - Performance summary table (formatted text)
 
@@ -126,9 +133,15 @@ GuideLL M sweep tests generate ~8-9 data points per core configuration at differ
 
 **Percentile Interpretation:**
 - **P50 (Median)** - Typical performance, 50% of requests complete within this time/throughput
+- **P90** - 90% of requests meet this performance level
 - **P95** - Reliability floor, 95% of requests meet this performance level
-  - For throughput (higher is better): P95 < P50 (P95 shows minimum throughput 95% of time)
-  - For latency (lower is better): P95 > P50 (P95 shows maximum latency 95% of time)
+- **P99** - Worst-case performance for 99% of requests
+  - For throughput (higher is better): P99 < P95 < P90 < P50 (lower percentiles show minimum throughput)
+  - For latency (lower is better): P99 > P95 > P90 > P50 (higher percentiles show maximum latency)
+
+**Graph Types:**
+- **Percentile Sweep Graphs** - Show p50, p90, p95, p99 curves to visualize saturation and variability under load (matches GuideLL M HTML format)
+- **Simple Graphs** - Show MEAN and P95 only for quick comparison and clearer visualization
 
 ## Directory Structure
 
