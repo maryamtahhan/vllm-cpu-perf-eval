@@ -122,7 +122,7 @@ awx/
 1. **Resources** → **Templates** → **Add** → **Add job template**
 2. Use this file as reference for field values:
    - **Name**: LLM GuideLLM Performance Test
-   - **Playbook**: `automation/test-execution/ansible/playbooks/llm/run-guidellm-test.yml`
+   - **Playbook**: `automation/test-execution/ansible/llm-benchmark.yml`
    - **Credentials**: Select your SSH credential
    - **Survey**: Enable and add questions from `surveys/llm-guidellm-test.yml`
    - **Extra Vars**: Copy the extra_vars section
@@ -267,7 +267,7 @@ Cleanup (always runs)
    - Generates inventory JSON
    ↓
 7. AWX runs Ansible playbook
-   (playbooks/llm/run-guidellm-test.yml)
+   (llm-benchmark.yml)
    - Uses generated inventory
    - Uses SSH credential for DUT access
    - Uses HF Token credential (if attached)

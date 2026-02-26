@@ -43,8 +43,8 @@ AWX is the open-source web UI for Ansible. It provides:
        ↓
 ┌─────────────────────────────────────────┐
 │  Ansible Playbooks (our existing code)  │
-│  - playbooks/llm/run-guidellm-test.yml  │
-│  - playbooks/embedding/run-tests.yml    │
+│  - llm-benchmark.yml                    │
+│  - embedding-benchmark.yml              │
 └──────┬──────────────────────────────────┘
        │
        ↓
@@ -232,7 +232,7 @@ See: https://github.com/ansible/awx/blob/devel/INSTALL.md
    - **Job Type**: Run
    - **Inventory**: vLLM Test Infrastructure
    - **Project**: vLLM CPU Perf Eval
-   - **Playbook**: `automation/test-execution/ansible/playbooks/llm/run-guidellm-test.yml`
+   - **Playbook**: `automation/test-execution/ansible/llm-benchmark.yml`
    - **Credentials**:
      - Select: DUT SSH Key (AWS EC2)
    - **Options**:
@@ -367,7 +367,7 @@ Results are stored in the configured `results_dir` on the load generator.
 To fetch results to AWX server:
 
 1. Create a "Fetch Results" job template:
-   - Playbook: `playbooks/common/collect-logs.yml`
+   - Playbook: `collect-logs.yml`
    - Runs on: load_generator
    - Fetches: `{{ results_dir }}` to AWX project directory
 
@@ -530,7 +530,7 @@ Trigger tests via API calls (e.g., from CI/CD):
 - [AWX Documentation](https://ansible.readthedocs.io/projects/awx/en/latest/)
 - [AWX GitHub Repository](https://github.com/ansible/awx)
 - [Ansible Playbook Documentation](https://docs.ansible.com/ansible/latest/playbook_guide/)
-- [vLLM Performance Testing Playbooks](../ansible/playbooks/)
+- [vLLM Performance Testing Ansible](../ansible/ansible.md)
 
 ## Support
 

@@ -23,7 +23,7 @@ inventory: "{{ awx_inventory_name }}"  # Will be set during AWX setup
 
 # Playbook to run
 project: "{{ awx_project_name }}"  # Your AWX project (Git repo or local)
-playbook: automation/test-execution/ansible/playbooks/llm/run-guidellm-test.yml
+playbook: automation/test-execution/ansible/llm-benchmark.yml
 
 # Credentials needed
 credentials:

@@ -117,7 +117,7 @@ make clean-all     # Remove everything (DESTRUCTIVE!)
    - **Job Type**: Run
    - **Inventory**: vLLM Test Infrastructure
    - **Project**: vLLM CPU Perf Eval
-   - **Playbook**: `automation/test-execution/ansible/playbooks/llm/run-guidellm-test.yml`
+   - **Playbook**: `automation/test-execution/ansible/llm-benchmark.yml`
    - **Credentials**: Select `DUT SSH Key`
    - **Options**: ✓ Prompt on launch (for credentials)
 3. **Save**
