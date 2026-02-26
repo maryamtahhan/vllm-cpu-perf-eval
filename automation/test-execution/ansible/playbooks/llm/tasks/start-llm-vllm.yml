@@ -67,7 +67,7 @@
 
       Example fix for this system:
         - name: "{{ core_cfg.name }}"
-          cpuset_cpus: "0-{{ [core_cfg.cores - 1, max_cpu_id] | min }}"
+          cpuset_cpus: "0-{{ [core_cfg.cores - 1, max_cpu_id | int] | min }}"
           cpuset_mems: "0"
     success_msg: "✓ CPU configuration validated: {{ core_cfg.cpuset_cpus }} is within available range 0-{{ max_cpu_id }}"
   when: "'-' in core_cfg.cpuset_cpus"
