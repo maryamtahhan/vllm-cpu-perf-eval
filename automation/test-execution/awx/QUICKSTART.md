@@ -2,9 +2,28 @@
 
 Get your first vLLM performance test running in AWX in 15 minutes.
 
+## Platform Notes
+
+**macOS Users:** The Docker Compose development environment may have issues on macOS. If `make quickstart` fails, use the KIND (Kubernetes) approach instead:
+
+```bash
+# Install KIND and kubectl if needed
+brew install kind kubectl
+
+# Start AWX in KIND (one command, macOS-friendly)
+make kind-start
+
+# Access AWX at http://localhost:30080
+# Login: admin / password
+```
+
+Then skip to Step 2 below to configure AWX.
+
+**Linux Users:** Use the standard Docker Compose approach (Option A below).
+
 ## Step 1: Install AWX (5 minutes)
 
-**Option A: Automated Install (Recommended)**
+**Option A: Automated Install - Docker Compose (Linux)**
 
 ```bash
 # One command to install and start AWX!
@@ -57,16 +76,19 @@ make clean-all     # Remove everything (DESTRUCTIVE!)
 
 ## Step 2: Import This Project (2 minutes)
 
-1. Login to AWX: http://localhost:8052
+1. Login to AWX:
+   - Docker Compose: <http://localhost:8052>
+   - KIND: <http://localhost:30080>
 2. **Resources** → **Projects** → **Add**
 3. Fill out:
    - **Name**: `vLLM CPU Perf Eval`
    - **Organization**: Default
    - **SCM Type**: Git
-   - **SCM URL**: `https://github.com/your-org/vllm-cpu-perf-eval.git`
-   - **SCM Branch**: `feature/inventory-split` (or `main` after merge)
+   - **SCM URL**: Your repository URL (e.g., `https://github.com/your-org/vllm-cpu-perf-eval.git`)
+   - **SCM Branch**: `awx-integration` (or your current branch)
+   - **Update Revision on Launch**: ✓ (optional, keeps playbooks up to date)
 4. **Save**
-5. Click **Sync** button (circular arrows)
+5. Click **Sync** button (circular arrows icon) to fetch the repository
 
 ## Step 3: Add Your DUT Credentials (2 minutes)
 
@@ -205,7 +227,7 @@ Go back to your job template survey and add more questions from [`surveys/llm-gu
 2. Use configuration from [`credentials/huggingface-token.yml`](credentials/huggingface-token.yml)
 3. **Resources** → **Credentials** → **Add**
    - **Type**: HuggingFace Token
-   - **Token**: `hf_xxxxx` (from https://huggingface.co/settings/tokens)
+   - **Token**: `hf_xxxxx` (from <https://huggingface.co/settings/tokens>)
 4. When launching job, select this credential
 5. Now you can test meta-llama models!
 

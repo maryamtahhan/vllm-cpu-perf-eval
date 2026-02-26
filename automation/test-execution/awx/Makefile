@@ -11,6 +11,11 @@ AWX_PORT ?= 8052
 AWX_ADMIN_USER ?= admin
 AWX_ADMIN_PASSWORD ?= password
 
+# KIND configuration (macOS-friendly approach)
+KIND_CLUSTER_NAME ?= awx
+KIND_AWX_PORT ?= 30080
+AWX_OPERATOR_DIR ?= /tmp/awx-operator
+
 # Project settings
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || echo "../../../")
 PROJECT_NAME := vllm-cpu-perf-eval
@@ -255,6 +260,213 @@ quickstart: install ## Full quick start (install + show next steps)
 	@echo "  make stop      - Stop AWX"
 	@echo "  make restart   - Restart AWX"
 	@echo "  make help      - Show all commands"
+
+# ============================================================================
+# KIND Targets (macOS-friendly Kubernetes approach)
+# ============================================================================
+
+.PHONY: check-kind-requirements
+check-kind-requirements: ## Check if KIND dependencies are installed
+	@echo "$(COLOR_INFO)Checking KIND requirements...$(COLOR_RESET)"
+	@if ! command -v kind >/dev/null 2>&1; then \
+		echo "$(COLOR_ERROR)Error: KIND not found!$(COLOR_RESET)"; \
+		echo "$(COLOR_INFO)Install KIND:$(COLOR_RESET)"; \
+		echo "  brew install kind"; \
+		echo "  or visit: https://kind.sigs.k8s.io/docs/user/quick-start/"; \
+		exit 1; \
+	fi
+	@echo "$(COLOR_SUCCESS)✓ KIND installed: $$(kind version)$(COLOR_RESET)"
+	@if ! command -v kubectl >/dev/null 2>&1; then \
+		echo "$(COLOR_ERROR)Error: kubectl not found!$(COLOR_RESET)"; \
+		echo "$(COLOR_INFO)Install kubectl:$(COLOR_RESET)"; \
+		echo "  brew install kubectl"; \
+		exit 1; \
+	fi
+	@echo "$(COLOR_SUCCESS)✓ kubectl installed$(COLOR_RESET)"
+	@if ! python3 -c "import openshift" 2>/dev/null; then \
+		echo "$(COLOR_WARNING)⚠ openshift Python module not found, installing...$(COLOR_RESET)"; \
+		pip3 install openshift; \
+	fi
+	@echo "$(COLOR_SUCCESS)✓ openshift Python module installed$(COLOR_RESET)"
+	@echo "$(COLOR_SUCCESS)All KIND requirements met!$(COLOR_RESET)"
+
+.PHONY: kind-create-cluster
+kind-create-cluster: check-kind-requirements ## Create KIND cluster for AWX
+	@echo "$(COLOR_INFO)Creating KIND cluster '$(KIND_CLUSTER_NAME)'...$(COLOR_RESET)"
+	@if kind get clusters | grep -q "^$(KIND_CLUSTER_NAME)$$"; then \
+		echo "$(COLOR_INFO)KIND cluster '$(KIND_CLUSTER_NAME)' already exists$(COLOR_RESET)"; \
+	else \
+		kind create cluster --config kind-cluster.yaml --name $(KIND_CLUSTER_NAME); \
+		echo "$(COLOR_SUCCESS)✓ KIND cluster created$(COLOR_RESET)"; \
+	fi
+	@kubectl cluster-info --context kind-$(KIND_CLUSTER_NAME)
+
+.PHONY: kind-deploy-operator
+kind-deploy-operator: ## Deploy AWX operator to KIND cluster
+	@echo "$(COLOR_INFO)Deploying AWX operator...$(COLOR_RESET)"
+	@if [ ! -d "$(AWX_OPERATOR_DIR)" ]; then \
+		echo "$(COLOR_INFO)Cloning AWX operator...$(COLOR_RESET)"; \
+		git clone https://github.com/ansible/awx-operator.git $(AWX_OPERATOR_DIR); \
+	fi
+	@kubectl apply -k $(AWX_OPERATOR_DIR)/config/default
+	@echo "$(COLOR_INFO)Waiting for operator to be ready...$(COLOR_RESET)"
+	@kubectl wait --for=condition=available --timeout=120s deployment/awx-operator-controller-manager -n awx
+	@echo "$(COLOR_SUCCESS)✓ AWX operator deployed and ready$(COLOR_RESET)"
+
+.PHONY: kind-deploy-awx
+kind-deploy-awx: ## Deploy AWX instance to KIND cluster
+	@echo "$(COLOR_INFO)Creating AWX secrets...$(COLOR_RESET)"
+	@kubectl create secret generic awx-admin-password \
+		--from-literal=password=$(AWX_ADMIN_PASSWORD) \
+		-n awx --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic awx-postgres-configuration \
+		--from-literal=host=awx-postgres-15 \
+		--from-literal=port=5432 \
+		--from-literal=database=awx \
+		--from-literal=username=awx \
+		--from-literal=password=awxpass \
+		--from-literal=type=managed \
+		-n awx --dry-run=client -o yaml | kubectl apply -f -
+	@echo "$(COLOR_INFO)Deploying AWX instance...$(COLOR_RESET)"
+	@kubectl apply -f awx-instance.yaml
+	@echo "$(COLOR_INFO)Waiting for AWX to be ready (this may take 3-5 minutes)...$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)Monitor progress: make kind-status$(COLOR_RESET)"
+
+.PHONY: kind-wait-ready
+kind-wait-ready: ## Wait for AWX to be ready in KIND
+	@echo "$(COLOR_INFO)Waiting for AWX pods to be ready...$(COLOR_RESET)"
+	@timeout=300; \
+	elapsed=0; \
+	while [ $$elapsed -lt $$timeout ]; do \
+		if kubectl get pods -n awx -l app.kubernetes.io/name=awx-web -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -q "true"; then \
+			echo "$(COLOR_SUCCESS)✓ AWX is ready!$(COLOR_RESET)"; \
+			echo ""; \
+			echo "$(COLOR_INFO)Access AWX:$(COLOR_RESET)"; \
+			echo "  URL:      http://localhost:$(KIND_AWX_PORT)"; \
+			echo "  Username: $(AWX_ADMIN_USER)"; \
+			echo "  Password: $(AWX_ADMIN_PASSWORD)"; \
+			echo ""; \
+			exit 0; \
+		fi; \
+		printf "$(COLOR_INFO)Waiting... ($$elapsed/$$timeout seconds)$(COLOR_RESET)\r"; \
+		sleep 5; \
+		elapsed=$$((elapsed + 5)); \
+	done; \
+	echo "$(COLOR_ERROR)✗ Timeout waiting for AWX$(COLOR_RESET)"; \
+	exit 1
+
+.PHONY: kind-start
+kind-start: kind-create-cluster kind-deploy-operator kind-deploy-awx kind-wait-ready ## Start AWX in KIND (all-in-one)
+	@echo ""
+	@echo "$(COLOR_SUCCESS)=====================================$(COLOR_RESET)"
+	@echo "$(COLOR_SUCCESS)  AWX on KIND is Ready!$(COLOR_RESET)"
+	@echo "$(COLOR_SUCCESS)=====================================$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_INFO)Access:$(COLOR_RESET) http://localhost:$(KIND_AWX_PORT)"
+	@echo "$(COLOR_INFO)Login:$(COLOR_RESET) admin / password"
+	@echo ""
+	@echo "$(COLOR_INFO)Useful commands:$(COLOR_RESET)"
+	@echo "  make kind-status   - Check AWX status"
+	@echo "  make kind-logs     - View AWX logs"
+	@echo "  make kind-open     - Open in browser"
+	@echo "  make kind-stop     - Stop KIND cluster"
+
+.PHONY: kind-status
+kind-status: ## Show KIND cluster and AWX status
+	@echo "$(COLOR_INFO)KIND Cluster Status:$(COLOR_RESET)"
+	@kind get clusters | grep "^$(KIND_CLUSTER_NAME)$$" || echo "Cluster not running"
+	@echo ""
+	@echo "$(COLOR_INFO)AWX Pods Status:$(COLOR_RESET)"
+	@kubectl get pods -n awx 2>/dev/null || echo "No pods found (cluster may not be running)"
+	@echo ""
+	@echo "$(COLOR_INFO)AWX Services:$(COLOR_RESET)"
+	@kubectl get svc -n awx 2>/dev/null || echo "No services found"
+
+.PHONY: kind-logs
+kind-logs: ## Show AWX logs from KIND
+	@echo "$(COLOR_INFO)AWX Web Logs (Ctrl+C to exit):$(COLOR_RESET)"
+	@kubectl logs -n awx -l app.kubernetes.io/name=awx-web --tail=50 -f
+
+.PHONY: kind-logs-task
+kind-logs-task: ## Show AWX task logs from KIND
+	@echo "$(COLOR_INFO)AWX Task Logs (Ctrl+C to exit):$(COLOR_RESET)"
+	@kubectl logs -n awx -l app.kubernetes.io/name=awx-task --tail=50 -f
+
+.PHONY: kind-shell
+kind-shell: ## Open shell in AWX web pod
+	@echo "$(COLOR_INFO)Opening shell in AWX web pod...$(COLOR_RESET)"
+	@kubectl exec -it -n awx $$(kubectl get pods -n awx -l app.kubernetes.io/name=awx-web -o jsonpath='{.items[0].metadata.name}') -- /bin/bash
+
+.PHONY: kind-stop
+kind-stop: ## Stop KIND cluster
+	@echo "$(COLOR_WARNING)Stopping KIND cluster '$(KIND_CLUSTER_NAME)'...$(COLOR_RESET)"
+	@kind delete cluster --name $(KIND_CLUSTER_NAME)
+	@echo "$(COLOR_SUCCESS)✓ KIND cluster stopped and removed$(COLOR_RESET)"
+
+.PHONY: kind-restart
+kind-restart: kind-stop kind-start ## Restart KIND cluster with AWX
+
+.PHONY: kind-open
+kind-open: ## Open AWX in browser (KIND)
+	@if command -v open >/dev/null 2>&1; then \
+		open http://localhost:$(KIND_AWX_PORT); \
+	elif command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open http://localhost:$(KIND_AWX_PORT); \
+	else \
+		echo "$(COLOR_INFO)Open in browser:$(COLOR_RESET) http://localhost:$(KIND_AWX_PORT)"; \
+	fi
+
+.PHONY: kind-health
+kind-health: ## Check AWX health in KIND
+	@echo "$(COLOR_INFO)Checking AWX health...$(COLOR_RESET)"
+	@if curl -s http://localhost:$(KIND_AWX_PORT)/api/v2/ping/ | grep -q "ha_enabled"; then \
+		echo "$(COLOR_SUCCESS)✓ AWX is healthy!$(COLOR_RESET)"; \
+		curl -s http://localhost:$(KIND_AWX_PORT)/api/v2/ping/ | python3 -m json.tool; \
+	else \
+		echo "$(COLOR_ERROR)✗ AWX health check failed$(COLOR_RESET)"; \
+		exit 1; \
+	fi
+
+.PHONY: kind-configure
+kind-configure: ## Configure AWX with projects, inventories, and job templates (KIND)
+	@echo "$(COLOR_INFO)Configuring AWX...$(COLOR_RESET)"
+	@export CONTROLLER_HOST=http://localhost:$(KIND_AWX_PORT); \
+	export CONTROLLER_USERNAME=$(AWX_ADMIN_USER); \
+	export CONTROLLER_PASSWORD=$(AWX_ADMIN_PASSWORD); \
+	ansible-playbook configure-awx.yml
+	@echo ""
+	@echo "$(COLOR_SUCCESS)✓ AWX configuration complete!$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)Ready to launch jobs from:$(COLOR_RESET) http://localhost:$(KIND_AWX_PORT)"
+
+.PHONY: configure
+configure: ## Configure AWX with projects, inventories, and job templates (Docker Compose)
+	@echo "$(COLOR_INFO)Configuring AWX...$(COLOR_RESET)"
+	@export CONTROLLER_HOST=http://localhost:$(AWX_PORT); \
+	export CONTROLLER_USERNAME=$(AWX_ADMIN_USER); \
+	export CONTROLLER_PASSWORD=$(AWX_ADMIN_PASSWORD); \
+	ansible-playbook configure-awx.yml
+	@echo ""
+	@echo "$(COLOR_SUCCESS)✓ AWX configuration complete!$(COLOR_RESET)"
+	@echo "$(COLOR_INFO)Ready to launch jobs from:$(COLOR_RESET) http://localhost:$(AWX_PORT)"
+
+.PHONY: kind-quickstart
+kind-quickstart: kind-start kind-configure ## Complete KIND setup (start + configure)
+	@echo ""
+	@echo "$(COLOR_SUCCESS)=====================================$(COLOR_RESET)"
+	@echo "$(COLOR_SUCCESS)  KIND AWX Quickstart Complete!$(COLOR_RESET)"
+	@echo "$(COLOR_SUCCESS)=====================================$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_INFO)Access AWX:$(COLOR_RESET) http://localhost:$(KIND_AWX_PORT)"
+	@echo "$(COLOR_INFO)Login:$(COLOR_RESET) admin / password"
+	@echo ""
+	@echo "$(COLOR_INFO)Everything is configured! Ready to:$(COLOR_RESET)"
+	@echo "  1. Launch 'LLM GuideLLM Performance Test' job"
+	@echo "  2. View results in /tmp/benchmark-results/"
+	@echo ""
+	@echo "$(COLOR_INFO)Commands:$(COLOR_RESET)"
+	@echo "  make kind-open     - Open AWX in browser"
+	@echo "  make kind-logs     - View AWX logs"
+	@echo "  make kind-status   - Check status"
 
 # Default target
 .DEFAULT_GOAL := help
