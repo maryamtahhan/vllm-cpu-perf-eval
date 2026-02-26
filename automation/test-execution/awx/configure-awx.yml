@@ -71,6 +71,135 @@
       awx.awx.inventory:
         name: "{{ inventory_name }}"
         organization: "Default"
+        variables:
+          # SSH configuration
+          ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+          # HuggingFace credentials
+          huggingface:
+            token_source: "env"
+            token_env_var: "HF_TOKEN"
+
+          # Container runtime settings
+          container_runtime:
+            engine: "podman"
+            image: "quay.io/mtahhan/vllm:0.14.0"
+            security_opts:
+              - "seccomp=unconfined"
+            capabilities:
+              - "SYS_NICE"
+            network_mode: "host"
+            shm_size: "4g"
+
+          # vLLM server configuration
+          vllm_container_name: "vllm-server"
+          vllm_server:
+            host: "0.0.0.0"
+            port: 8000
+
+          # vLLM endpoint mode
+          vllm_endpoint:
+            mode: "managed"
+            external:
+              url: null
+              api_key:
+                enabled: false
+                source: "env"
+                env_var: "VLLM_API_KEY"
+
+          # Health check configuration
+          health_check:
+            timeout: 300
+            interval: 5
+
+          # Platform setup options
+          platform_setup:
+            numa_balancing_off: true
+            thp_defrag_never: true
+            preempt_full: false
+
+          # Core configurations
+          core_configs:
+            - name: "8cores-single-socket"
+              cores: 8
+              cpuset_cpus: "0-7"
+              cpuset_mems: "0"
+              tensor_parallel: 1
+            - name: "16cores-single-socket"
+              cores: 16
+              cpuset_cpus: "0-15"
+              cpuset_mems: "0"
+              tensor_parallel: 1
+            - name: "32cores-single-socket"
+              cores: 32
+              cpuset_cpus: "0-31"
+              cpuset_mems: "0"
+              tensor_parallel: 1
+            - name: "64cores-single-socket-tp2"
+              cores: 64
+              cpuset_cpus: "0-63"
+              cpuset_mems: "0"
+              omp_num_threads: 32
+              omp_threads_bind: "0-31|32-63"
+              tensor_parallel: 2
+            - name: "96cores-dual-socket-tp3"
+              cores: 96
+              cpuset_cpus: "0-95"
+              cpuset_mems: "0,1"
+              tensor_parallel: 3
+            - name: "128cores-dual-socket-tp4"
+              cores: 128
+              cpuset_cpus: "0-127"
+              cpuset_mems: "0,1"
+              tensor_parallel: 4
+
+          # Test workload configurations
+          test_configs:
+            embedding:
+              workload_type: "embedding"
+              isl: 512
+              osl: 1
+              backend: "openai-embeddings"
+              vllm_args:
+                - "--dtype=bfloat16"
+                - "--max-model-len=512"
+              kv_cache_space: "1GiB"
+            summarization:
+              workload_type: "summarization"
+              isl: 1024
+              osl: 256
+              backend: "openai-completions"
+              vllm_args:
+                - "--dtype=bfloat16"
+                - "--no_enable_prefix_caching"
+              kv_cache_space: "40GiB"
+            chat:
+              workload_type: "chat"
+              isl: 512
+              osl: 128
+              backend: "openai-chat"
+              vllm_args:
+                - "--dtype=bfloat16"
+                - "--no_enable_prefix_caching"
+              kv_cache_space: "40GiB"
+            code:
+              workload_type: "code"
+              isl: 2048
+              osl: 512
+              backend: "openai-completions"
+              vllm_args:
+                - "--dtype=bfloat16"
+                - "--no_enable_prefix_caching"
+              kv_cache_space: "60GiB"
+            rag:
+              workload_type: "rag"
+              isl: 4096
+              osl: 256
+              backend: "openai-completions"
+              vllm_args:
+                - "--dtype=bfloat16"
+                - "--no_enable_prefix_caching"
+              kv_cache_space: "80GiB"
         controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username }}"
         controller_password: "{{ controller_password }}"
@@ -81,6 +210,10 @@
       awx.awx.group:
         name: dut
         inventory: "{{ inventory_name }}"
+        variables:
+          use_persistent_cache: false
+          model_cache_dir: /var/lib/vllm-models
+          log_dir: /tmp/vllm-logs
         controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username }}"
         controller_password: "{{ controller_password }}"
@@ -91,6 +224,8 @@
       awx.awx.group:
         name: load_generator
         inventory: "{{ inventory_name }}"
+        variables:
+          log_dir: /tmp/vllm-logs
         controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username }}"
         controller_password: "{{ controller_password }}"
