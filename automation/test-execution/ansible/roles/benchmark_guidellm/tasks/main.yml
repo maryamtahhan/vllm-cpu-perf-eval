@@ -6,23 +6,32 @@
 # COMMON SETUP (Both Execution Modes)
 # ============================================================================
 
-- name: Debug benchmark_tool type
-  ansible.builtin.debug:
-    msg:
-      - "benchmark_tool type: {{ benchmark_tool | type_debug }}"
-      - "benchmark_tool value: {{ benchmark_tool }}"
-
 - name: Get workload configuration
   ansible.builtin.set_fact:
     workload_cfg: "{{ test_configs[workload_type] }}"
     guidellm_cfg: "{{ benchmark_tool.guidellm }}"
     core_cfg: "{{ core_configuration }}"
 
+- name: Parse guidellm_rate if provided as string (from command line)
+  ansible.builtin.set_fact:
+    guidellm_rate_parsed: "{{ guidellm_rate | regex_replace('[\\[\\] ]', '') | split(',') | map('int') | list }}"
+  when:
+    - guidellm_rate is defined
+    - guidellm_rate is string
+    - guidellm_rate is match('\\[.*\\]')
+
+- name: Use guidellm_rate as-is if already a list
+  ansible.builtin.set_fact:
+    guidellm_rate_parsed: "{{ guidellm_rate }}"
+  when:
+    - guidellm_rate is defined
+    - guidellm_rate is not string
+
 - name: Ensure guidellm_cfg has all required defaults (with flat variable overrides)
   ansible.builtin.set_fact:
     guidellm_cfg: "{{ guidellm_cfg | combine({
         'profile': guidellm_profile | default(guidellm_cfg.profile | default('sweep')),
-        'rate': guidellm_rate | default(guidellm_cfg.rate | default([10])),
+        'rate': guidellm_rate_parsed | default(guidellm_rate) | default(guidellm_cfg.rate | default([10])),
         'container_image': guidellm_container_image | default(guidellm_cfg.container_image | default('ghcr.io/vllm-project/guidellm:latest')),
         'use_container': guidellm_use_container | default(guidellm_cfg.use_container | default(true)),
         'cpuset_cpus': guidellm_cpuset_cpus | default(guidellm_cfg.cpuset_cpus | default('16-31')),
@@ -197,6 +206,85 @@
     - use_guidellm_container | bool
     - container_exit_code.stdout is defined
     - container_exit_code.stdout != '0'
+
+- name: Capture GuideLLM container logs
+  ansible.builtin.shell:
+    cmd: "podman logs {{ ('guidellm-' ~ workload_type ~ '-' ~ core_cfg.name) | quote }} 2>&1"
+  args:
+    executable: /bin/bash
+  register: guidellm_full_logs
+  changed_when: false
+  failed_when: false
+  when:
+    - use_guidellm_container | bool
+    - container_exit_code.stdout is defined
+
+- name: Save GuideLLM logs to temporary file on remote
+  ansible.builtin.copy:
+    content: "{{ guidellm_full_logs.stdout }}"
+    dest: "/tmp/guidellm-{{ workload_type }}-{{ core_cfg.name }}.log"
+    mode: "0644"
+  when:
+    - use_guidellm_container | bool
+    - guidellm_full_logs is defined
+    - guidellm_full_logs.stdout is defined
+
+- name: Fetch GuideLLM logs to controller
+  ansible.builtin.fetch:
+    src: "/tmp/guidellm-{{ workload_type }}-{{ core_cfg.name }}.log"
+    dest: "{{ results_path }}/guidellm.log"
+    flat: true
+  when:
+    - use_guidellm_container | bool
+    - guidellm_full_logs is defined
+    - guidellm_full_logs.stdout is defined
+
+- name: Extract test duration from GuideLLM logs
+  ansible.builtin.set_fact:
+    test_duration_string: "{{ guidellm_full_logs.stdout | regex_search('\\[\\s*([0-9]+:[0-9]+:[0-9]+)\\s*<', '\\1') | first | default('0:00:00') }}"
+  when:
+    - use_guidellm_container | bool
+    - guidellm_full_logs is defined
+    - guidellm_full_logs.stdout is defined
+
+- name: Parse duration to seconds
+  ansible.builtin.set_fact:
+    test_duration_parts: "{{ test_duration_string.split(':') }}"
+  when:
+    - use_guidellm_container | bool
+    - test_duration_string is defined
+
+- name: Calculate total duration in seconds
+  ansible.builtin.set_fact:
+    test_duration_seconds: "{{ ((test_duration_parts[0] | int) * 3600) + ((test_duration_parts[1] | int) * 60) + (test_duration_parts[2] | int) }}"
+  when:
+    - use_guidellm_container | bool
+    - test_duration_parts is defined
+    - test_duration_parts | length == 3
+
+- name: Read existing test metadata from controller
+  ansible.builtin.slurp:
+    src: "{{ results_path }}/test-metadata.json"
+  register: existing_metadata
+  when:
+    - use_guidellm_container | bool
+    - test_duration_seconds is defined
+  delegate_to: localhost
+  connection: local
+  become: false
+
+- name: Update test metadata with duration on controller
+  ansible.builtin.copy:
+    content: "{{ (existing_metadata.content | b64decode | from_json) | combine({'test_duration_seconds': test_duration_seconds | int, 'test_duration': test_duration_string}) | to_nice_json }}"
+    dest: "{{ results_path }}/test-metadata.json"
+    mode: "0644"
+  when:
+    - use_guidellm_container | bool
+    - test_duration_seconds is defined
+    - existing_metadata is defined
+  delegate_to: localhost
+  connection: local
+  become: false
 
 - name: Remove completed container
   containers.podman.podman_container:
