@@ -20,28 +20,15 @@
         recursive: true
 
     - name: Copy GuideLLM logs from controller to final results
-      ansible.builtin.shell: |
-        for log_file in {{ bench_config.results_dir }}/{{ test_model | replace('/', '__') }}/{{ workload_type }}/*/guidellm.log; do
-          if [ -f "$log_file" ]; then
-            config_dir=$(basename $(dirname "$log_file"))
-            mkdir -p "{{ playbook_dir }}/../../../results/llm/{{ test_model | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/$config_dir"
-            cp "$log_file" "{{ playbook_dir }}/../../../results/llm/{{ test_model | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/$config_dir/"
-          fi
-        done
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/scripts/copy-guidellm-logs.sh '{{ test_model }}' '{{ workload_type }}' '{{ test_run_id }}' '{{ bench_config.results_dir }}' '{{ playbook_dir }}/../../../results/llm'"
       delegate_to: localhost
       changed_when: false
       failed_when: false
 
     - name: Extract per-benchmark timings for all configurations
-      ansible.builtin.shell: |
-        for benchmarks_file in {{ playbook_dir }}/../../../results/llm/{{ test_model | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/*/benchmarks.json; do
-          if [ -f "$benchmarks_file" ]; then
-            metadata_file="${benchmarks_file%benchmarks.json}test-metadata.json"
-            if [ -f "$metadata_file" ]; then
-              python3 {{ playbook_dir }}/scripts/extract_benchmark_timings.py "$benchmarks_file" "$metadata_file"
-            fi
-          fi
-        done
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/scripts/extract-all-timings.sh '{{ test_model }}' '{{ workload_type }}' '{{ test_run_id }}' '{{ playbook_dir }}/../../../results/llm' '{{ playbook_dir }}/scripts'"
       delegate_to: localhost
       register: timing_extraction
       changed_when: false
