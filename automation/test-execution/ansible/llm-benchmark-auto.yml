@@ -16,7 +16,7 @@
   gather_facts: false
 
   tasks:
-    - name: Validate required variables
+    - name: Validate required variables are defined
       ansible.builtin.assert:
         that:
           - test_model is defined
@@ -27,6 +27,45 @@
           -e "test_model=<model>"
           -e "workload_type=<summarization|chat|code|rag>"
           -e "requested_cores=<8|16|32|64|...>"
+
+    - name: Validate requested_cores is a positive integer
+      ansible.builtin.assert:
+        that:
+          - requested_cores | int > 0
+          - requested_cores | int == requested_cores | float
+        fail_msg: "requested_cores must be a positive integer, got: {{ requested_cores }}"
+
+    - name: Validate workload_type is supported
+      ansible.builtin.assert:
+        that:
+          - workload_type in test_configs.keys()
+        fail_msg: |
+          Unsupported workload_type: {{ workload_type }}
+          Supported workloads: {{ test_configs.keys() | list | join(', ') }}
+
+    - name: Validate guidellm_profile if provided
+      ansible.builtin.assert:
+        that:
+          - guidellm_profile in ['sweep', 'synchronous', 'concurrent', 'throughput']
+        fail_msg: |
+          Invalid guidellm_profile: {{ guidellm_profile }}
+          Supported profiles: sweep, synchronous, concurrent, throughput
+      when: guidellm_profile is defined
+
+    - name: Validate guidellm_max_seconds if provided
+      ansible.builtin.assert:
+        that:
+          - guidellm_max_seconds | int > 0
+          - guidellm_max_seconds | int <= 3600
+        fail_msg: "guidellm_max_seconds must be between 1 and 3600, got: {{ guidellm_max_seconds }}"
+      when: guidellm_max_seconds is defined
+
+    - name: Validate guidellm_max_requests if provided
+      ansible.builtin.assert:
+        that:
+          - guidellm_max_requests | int > 0
+        fail_msg: "guidellm_max_requests must be a positive integer, got: {{ guidellm_max_requests }}"
+      when: guidellm_max_requests is defined
 
     - name: Generate test run ID if not provided
       ansible.builtin.set_fact:
