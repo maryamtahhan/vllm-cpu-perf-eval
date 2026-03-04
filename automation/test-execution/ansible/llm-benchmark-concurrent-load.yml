@@ -48,11 +48,6 @@
     test_model: "{{ test_model | mandatory }}"
     base_workload: "{{ base_workload | mandatory }}"
 
-    # Optional phase control (default: run all phases)
-    skip_phase_1: "{{ skip_phase_1 | default(false) | bool }}"
-    skip_phase_2: "{{ skip_phase_2 | default(false) | bool }}"
-    skip_phase_3: "{{ skip_phase_3 | default(false) | bool }}"
-
     # Determine variable workload suffix
     variable_workload: "{{ base_workload }}_var"
 
@@ -75,9 +70,9 @@
           - "============================================================"
           - "Model: {{ test_model }}"
           - "Base Workload: {{ base_workload }}"
-          - "Phase 1 (Baseline): {{ 'SKIP' if skip_phase_1 else 'RUN' }}"
-          - "Phase 2 (Realistic): {{ 'SKIP' if skip_phase_2 else ('RUN' if has_variable_workload else 'N/A') }}"
-          - "Phase 3 (Production): {{ 'SKIP' if skip_phase_3 else 'RUN' }}"
+          - "Phase 1 (Baseline): {{ 'SKIP' if (skip_phase_1 | default(false) | bool) else 'RUN' }}"
+          - "Phase 2 (Realistic): {{ 'SKIP' if (skip_phase_2 | default(false) | bool) else ('RUN' if has_variable_workload else 'N/A') }}"
+          - "Phase 3 (Production): {{ 'SKIP' if (skip_phase_3 | default(false) | bool) else 'RUN' }}"
           - "Core Configuration: {{ core_sweep_counts | default(requested_cores | default('Not specified')) }}"
           - "============================================================"
 
@@ -119,7 +114,6 @@
   hosts: localhost
   gather_facts: false
   vars:
-    skip_phase_2: "{{ skip_phase_2 | default(false) | bool }}"
     has_variable_workload: "{{ (base_workload + '_var') in ['chat_var', 'code_var'] }}"
   tasks:
     - name: Phase 2 skipped notification
@@ -128,7 +122,7 @@
           - "⊘ Phase 2 Skipped: No variable workload defined for {{ base_workload }}"
           - "  Variable workloads only available for: chat, code"
       when:
-        - not skip_phase_2
+        - not (skip_phase_2 | default(false) | bool)
         - not has_variable_workload
 
     - name: Phase 2 complete notification
@@ -138,7 +132,7 @@
           - "  Workload: {{ base_workload }}_var (variable tokens)"
           - "  Caching: disabled (--no-enable-prefix-caching --disable-radix-cache)"
       when:
-        - not skip_phase_2
+        - not (skip_phase_2 | default(false) | bool)
         - has_variable_workload
 
 # ==========================================================================
@@ -170,9 +164,6 @@
   hosts: localhost
   gather_facts: false
   vars:
-    skip_phase_1: "{{ skip_phase_1 | default(false) | bool }}"
-    skip_phase_2: "{{ skip_phase_2 | default(false) | bool }}"
-    skip_phase_3: "{{ skip_phase_3 | default(false) | bool }}"
     has_variable_workload: "{{ (base_workload + '_var') in ['chat_var', 'code_var'] }}"
   tasks:
     - name: Display test suite summary
@@ -185,9 +176,9 @@
           - "Base Workload: {{ base_workload }}"
           - ""
           - "Phases Completed:"
-          - "  Phase 1 (Baseline): {{ 'SKIPPED' if skip_phase_1 else 'COMPLETE' }}"
-          - "  Phase 2 (Realistic): {{ 'SKIPPED' if skip_phase_2 else ('COMPLETE' if has_variable_workload else 'N/A') }}"
-          - "  Phase 3 (Production): {{ 'SKIPPED' if skip_phase_3 else 'COMPLETE' }}"
+          - "  Phase 1 (Baseline): {{ 'SKIPPED' if (skip_phase_1 | default(false) | bool) else 'COMPLETE' }}"
+          - "  Phase 2 (Realistic): {{ 'SKIPPED' if (skip_phase_2 | default(false) | bool) else ('COMPLETE' if has_variable_workload else 'N/A') }}"
+          - "  Phase 3 (Production): {{ 'SKIPPED' if (skip_phase_3 | default(false) | bool) else 'COMPLETE' }}"
           - ""
           - "Results Location:"
           - "  results/llm/{{ test_model | replace('/', '__') }}/"
