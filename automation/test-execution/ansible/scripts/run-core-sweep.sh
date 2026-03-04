@@ -13,21 +13,53 @@
 
 set -euo pipefail
 
-# Default values
+# Global variables
 MODEL=""
 WORKLOAD=""
 CORES=""
 EXTRA_VARS=""
 ANSIBLE_VERBOSITY=""
 
-# Check if first argument is a flag or positional
-if [[ $# -ge 3 ]] && [[ ! "$1" =~ ^-- ]]; then
-  # Positional arguments
+#
+# Display usage information
+#
+show_usage() {
+  cat <<EOF
+Usage (positional):
+  $0 MODEL WORKLOAD CORES [EXTRA_ARGS...] [-v|-vv|-vvv]
+
+Usage (named):
+  $0 --model MODEL --workload WORKLOAD --cores CORES [-v|-vv|-vvv]
+
+Arguments:
+  MODEL         Model identifier (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+  WORKLOAD      Workload type (e.g., "chat", "code", "rag")
+  CORES         Comma-separated list of core counts (e.g., "2,4,8,16")
+
+Options:
+  --extra-vars  Additional Ansible extra vars (named mode only)
+  -v, -vv, -vvv Ansible verbosity level (optional)
+
+Examples:
+  $0 TinyLlama/TinyLlama-1.1B-Chat-v1.0 chat "2,4,8,16"
+  $0 TinyLlama/TinyLlama-1.1B-Chat-v1.0 chat "2,4,8,16" -vv
+  $0 --model meta-llama/Llama-3.2-1B-Instruct --workload rag --cores "8,16,32"
+EOF
+}
+
+#
+# Parse positional arguments
+# Args: MODEL WORKLOAD CORES [EXTRA_ARGS...]
+#
+parse_positional_args() {
   MODEL="$1"
   WORKLOAD="$2"
   CORES="$3"
   shift 3
-  # Extract verbosity flag if present, keep rest as extra vars
+
+  # Separate verbosity flags from extra vars
+  # Verbosity flags like -v, -vv, -vvv go to ANSIBLE_VERBOSITY
+  # All other arguments are treated as extra vars
   for arg in "$@"; do
     if [[ "$arg" =~ ^-v+$ ]]; then
       ANSIBLE_VERBOSITY="$arg"
@@ -35,8 +67,13 @@ if [[ $# -ge 3 ]] && [[ ! "$1" =~ ^-- ]]; then
       EXTRA_VARS="$EXTRA_VARS $arg"
     fi
   done
-else
-  # Named arguments
+}
+
+#
+# Parse named arguments
+# Args: --model MODEL --workload WORKLOAD --cores CORES [OPTIONS...]
+#
+parse_named_args() {
   while [[ $# -gt 0 ]]; do
     case $1 in
       --model)
@@ -59,62 +96,108 @@ else
         ANSIBLE_VERBOSITY="$1"
         shift
         ;;
+      -h|--help)
+        show_usage
+        exit 0
+        ;;
       *)
-        echo "Unknown option: $1"
+        echo "Error: Unknown option: $1" >&2
+        echo "" >&2
+        show_usage >&2
         exit 1
         ;;
     esac
   done
-fi
+}
 
-# Validate required arguments
-if [[ -z "$MODEL" ]] || [[ -z "$WORKLOAD" ]] || [[ -z "$CORES" ]]; then
-  echo "Error: Missing required arguments"
-  echo ""
-  echo "Usage (positional):"
-  echo "  $0 MODEL WORKLOAD CORES [EXTRA_ARGS...] [-v|-vv|-vvv]"
-  echo ""
-  echo "Usage (named):"
-  echo "  $0 --model MODEL --workload WORKLOAD --cores CORES [-v|-vv|-vvv]"
-  echo ""
-  echo "Options:"
-  echo "  -v, -vv, -vvv    Ansible verbosity level (optional)"
-  echo ""
-  echo "Example:"
-  echo "  $0 TinyLlama/TinyLlama-1.1B-Chat-v1.0 chat \"2,4,8,16\""
-  echo "  $0 TinyLlama/TinyLlama-1.1B-Chat-v1.0 chat \"2,4,8,16\" -vv"
-  exit 1
-fi
+#
+# Validate that all required arguments are provided
+#
+validate_required_args() {
+  local missing=()
 
-# Generate test run ID
+  [[ -z "$MODEL" ]] && missing+=("MODEL")
+  [[ -z "$WORKLOAD" ]] && missing+=("WORKLOAD")
+  [[ -z "$CORES" ]] && missing+=("CORES")
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Error: Missing required arguments: ${missing[*]}" >&2
+    echo "" >&2
+    show_usage >&2
+    exit 1
+  fi
+}
+
+#
+# Parse command line arguments (auto-detect positional vs named)
+#
+parse_arguments() {
+  if [[ $# -eq 0 ]]; then
+    show_usage
+    exit 1
+  fi
+
+  # Check if using positional or named arguments
+  # Positional: First arg doesn't start with --
+  # Named: First arg starts with --
+  if [[ $# -ge 3 ]] && [[ ! "$1" =~ ^-- ]]; then
+    parse_positional_args "$@"
+  else
+    parse_named_args "$@"
+  fi
+
+  validate_required_args
+}
+
+# Parse command line arguments
+parse_arguments "$@"
+
+#
+# Generate unique test run identifier
+# Format: YYYYMMDD-HHMMSS (e.g., 20260304-143022)
+#
 TEST_RUN_ID=$(date +%Y%m%d-%H%M%S)
 
-# Convert comma-separated cores to array
+#
+# Convert comma-separated cores to array for iteration
+# Example: "2,4,8,16" -> ("2" "4" "8" "16")
+#
 IFS=',' read -ra CORE_ARRAY <<< "$CORES"
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Core Sweep Test"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+#
+# Display test configuration
+#
+print_header() {
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$1"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
+print_header "Core Sweep Test"
 echo "Test Run ID: $TEST_RUN_ID"
 echo "Model: $MODEL"
 echo "Workload: $WORKLOAD"
 echo "Core Counts: ${CORE_ARRAY[*]}"
 [[ -n "$ANSIBLE_VERBOSITY" ]] && echo "Ansible Verbosity: $ANSIBLE_VERBOSITY"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+[[ -n "$EXTRA_VARS" ]] && echo "Extra Vars: $EXTRA_VARS"
+print_header ""
 echo
 
-# Run test for each core count
-# Note: NUMA detection happens within each iteration playbook
+#
+# Run benchmark for each core count
+# Each iteration runs the full benchmark workflow with a different core allocation
+# The test_run_id is shared across all iterations for result aggregation
+#
 TOTAL=${#CORE_ARRAY[@]}
 CURRENT=0
 
 for cores in "${CORE_ARRAY[@]}"; do
   CURRENT=$((CURRENT + 1))
   echo
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "[$CURRENT/$TOTAL] Testing with $cores cores"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_header "[$CURRENT/$TOTAL] Testing with $cores cores"
 
+  # shellcheck disable=SC2086
+  # Note: EXTRA_VARS and ANSIBLE_VERBOSITY must be unquoted for proper expansion
   ansible-playbook llm-benchmark-auto.yml \
     -e "test_model=$MODEL" \
     -e "workload_type=$WORKLOAD" \
@@ -126,22 +209,25 @@ for cores in "${CORE_ARRAY[@]}"; do
   echo "✓ Completed $cores cores"
 done
 
+#
+# Collect and consolidate results from all core count iterations
+#
 echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Collecting Results"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_header "Collecting Results"
 
-# Collect all results
+# shellcheck disable=SC2086
 ansible-playbook collect-sweep-results.yml \
   -e "test_model=$MODEL" \
   -e "workload_type=$WORKLOAD" \
   -e "test_run_id=$TEST_RUN_ID" \
   $ANSIBLE_VERBOSITY
 
+#
+# Display completion summary
+#
 echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✓ Core Sweep Complete!"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_header "✓ Core Sweep Complete!"
 echo "Results: results/llm/${MODEL//\//__}/$WORKLOAD-$TEST_RUN_ID/"
 echo "Core Counts Tested: ${CORE_ARRAY[*]}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Total Configurations: ${#CORE_ARRAY[@]}"
+print_header ""
