@@ -245,6 +245,16 @@ Full documentation index: [docs/docs.md](docs/docs.md)
 
 ## Test Suites
 
+> **⚠️ Validation Status:**
+> - ✅ **Concurrent Load** - Fully validated and tested
+> - 🚧 **Scalability** - Work in progress; no guarantees
+> - 🚧 **Resource Contention** - Work in progress; no guarantees
+> - 🚧 **Embedding Models** - Work in progress; no guarantees
+>
+> Only the concurrent load test suite has been fully validated and tested.
+> Other test suites are work in progress and provided as-is with no guarantees
+> they will work without modification.
+
 ### Test Suite: Concurrent Load
 
 Tests model performance under various concurrent request loads.
