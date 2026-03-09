@@ -86,7 +86,9 @@ Concurrency levels: **{1, 8, 16, 32, 64, 96, 128}**
 | CONC-OPT125M-SUMM | facebook/opt-125m | Summarization (1024:256) | P95 Latency for Summarization |
 | CONC-OPT125M-CHAT | facebook/opt-125m | Chat (512:256) | P95 Latency (Small Baseline) |
 
-**Note:** Tests with `-VAR` suffix include statistical variability. Run these after baseline tests for comparison.
+**Notes:**
+- Tests with `-VAR` suffix include statistical variability. Run these after baseline tests for comparison.
+- The table above shows representative test coverage. The complete test matrix is defined in [`model-matrix.yaml`](../../models/llm-models/model-matrix.yaml), which serves as the source-of-truth for execution. Not all models are tested with all workload profiles - combinations are selected based on model characteristics and primary use cases.
 
 <!-- markdownlint-enable MD013 -->
 
