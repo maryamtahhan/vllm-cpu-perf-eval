@@ -57,8 +57,8 @@ benchmark_tool:
     # For constant/poisson: list of requests per second [10, 20, 30]
     # For sweep: number of benchmarks to generate (optional)
     # For synchronous: leave empty (will error if provided)
-    # Default concurrency sweep for CPU testing: [1, 8, 16, 32, 64, 96, 128]
-    rate: [1, 8, 16, 32, 64, 96, 128]
+    # Default concurrency sweep for CPU testing: [1, 2, 4, 8, 16, 32, 64, 96, 128]
+    rate: [1, 2, 4, 8, 16, 32, 64, 96, 128]
 
     # Runtime constraints (apply to all profiles)
     max_seconds: 600            # Maximum benchmark duration (10 minutes for enhanced methodology)
