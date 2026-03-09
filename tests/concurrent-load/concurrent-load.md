@@ -45,7 +45,7 @@ This test suite evaluates generative LLM models across multiple architecture fam
 | **Test Duration** | Time per profile | `--max-seconds=600` (10 min) | `--max-seconds=600` (10 min) |
 | **Warmup** | Warmup period | `--warmup=0.1` (10% = 60s) | `--warmup=0.1` (10% = 60s) |
 | **Request Timeout** | Max time per request | `--request-timeout=600` | `--request-timeout=600` |
-| **Concurrency** | Parallel request levels | `{1, 8, 16, 32, 64, 96, 128}` | `{1, 8, 16, 32, 64, 96, 128}` |
+| **Concurrency** | Parallel request levels | `{1, 2, 4, 8, 16, 32, 64, 96, 128}` | `{1, 2, 4, 8, 16, 32, 64, 96, 128}` |
 | **Affinity** | Core allocation strategy | FULL: All physical cores | FULL: All physical cores |
 | **Cores** | Number of cores for test | 16, 32, 64 cores | 16, 32, 64 cores |
 | **Dtype** | Data type for weights | bfloat16 | bfloat16 |
@@ -58,7 +58,7 @@ This test suite evaluates generative LLM models across multiple architecture fam
 
 ### LLM Models - Concurrent Tests
 
-Concurrency levels: **{1, 8, 16, 32, 64, 96, 128}**
+Concurrency levels: **{1, 2, 4, 8, 16, 32, 64, 96, 128}**
 
 <!-- markdownlint-disable MD013 -->
 
@@ -115,7 +115,7 @@ performance, realistic variability, and production optimization analysis.
 **Configuration:**
 - vLLM: `--no-enable-prefix-caching`, `--disable-radix-cache`
 - Token counts: Fixed (no variability)
-- Concurrency: `{1, 8, 16, 32, 64, 96, 128}`
+- Concurrency: `{1, 2, 4, 8, 16, 32, 64, 96, 128}`
 
 **Tests:** All models × All workload profiles (Chat, RAG, CodeGen, Summarization)
 
