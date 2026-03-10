@@ -51,11 +51,11 @@
   ansible.builtin.set_fact:
     auto_core_config:
       name: "{{ requested_cores }}cores-numa{{ core_allocation_result.allocated_nodes | join('-') }}-tp{{ core_allocation_result.tensor_parallel }}"
-      cores: "{{ requested_cores }}"
+      cores: "{{ requested_cores | int }}"
       cpuset_cpus: "{{ core_allocation_result.cpuset_cpus }}"
       cpuset_mems: "{{ core_allocation_result.cpuset_mems }}"
-      tensor_parallel: "{{ core_allocation_result.tensor_parallel }}"
-      omp_num_threads: "{{ core_allocation_result.omp_num_threads }}"
+      tensor_parallel: "{{ core_allocation_result.tensor_parallel | int }}"
+      omp_num_threads: "{{ core_allocation_result.omp_num_threads | int }}"
       allocated_nodes: "{{ core_allocation_result.allocated_nodes }}"
       cores_per_node: "{{ core_allocation_result.cores_per_node }}"
       allocation_strategy: "{{ core_allocation_result.allocation_strategy }}"

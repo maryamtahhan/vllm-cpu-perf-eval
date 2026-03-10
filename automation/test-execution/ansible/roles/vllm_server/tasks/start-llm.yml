@@ -191,7 +191,7 @@
       --host {{ vllm_server.host }}
       --port {{ vllm_server.port }}
       {{ vllm_args_merged | join(' ') }}
-      {% if core_cfg.tensor_parallel > 1 %}-tp {{ core_cfg.tensor_parallel }}{% endif %}
+      {% if core_cfg.tensor_parallel | int > 1 %}-tp {{ core_cfg.tensor_parallel }}{% endif %}
 
 - name: Pull vLLM container image
   containers.podman.podman_container:
