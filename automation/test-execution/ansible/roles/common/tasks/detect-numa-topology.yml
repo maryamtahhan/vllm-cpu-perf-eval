@@ -52,7 +52,7 @@
     all_cpus_list: "{{ lscpu_data | extract_all_cpus(item) }}"
     node_info:
       id: "{{ item | string }}"
-      physical_cores: "{{ (physical_cpus_list.split(',') | length) if physical_cpus_list else 0 }}"
+      physical_cores: "{{ ((physical_cpus_list.split(',') | length) if physical_cpus_list else 0) | int }}"
       physical_cpus: "{{ physical_cpus_list | cpu_list_to_range }}"
       physical_cpus_list: "{{ physical_cpus_list }}"
       all_cpus: "{{ all_cpus_list | cpu_list_to_range }}"
@@ -82,8 +82,8 @@
 - name: Set NUMA topology facts
   ansible.builtin.set_fact:
     numa_topology:
-      node_count: "{{ numa_node_count }}"
-      total_physical_cores: "{{ numa_nodes_inventory | map(attribute='physical_cores') | sum }}"
+      node_count: "{{ numa_node_count | int }}"
+      total_physical_cores: "{{ numa_nodes_inventory | map(attribute='physical_cores') | map('int') | sum }}"
       nodes: "{{ numa_nodes_inventory }}"
       allocation_policy: "{{ allocation_policy }}"
 

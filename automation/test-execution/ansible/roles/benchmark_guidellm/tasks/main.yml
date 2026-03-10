@@ -309,7 +309,7 @@
 
 - name: Set exit code (unified across modes)
   ansible.builtin.set_fact:
-    guidellm_exit_code: "{{ (container_exit_code.stdout | default(guidellm_host_result.rc | string)) if use_guidellm_container else (guidellm_host_result.rc | string) }}"
+    guidellm_exit_code: "{{ (container_exit_code.stdout | default('1')) if use_guidellm_container else ((guidellm_host_result.rc | default(1)) | string) }}"
 
 - name: Display GuideLLM completion status
   ansible.builtin.debug:
