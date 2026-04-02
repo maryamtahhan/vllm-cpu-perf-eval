@@ -65,7 +65,7 @@ setup_pushgateway_tunnel() {
     echo "  LOADGEN localhost:${PUSHGATEWAY_PORT} → Your machine localhost:${PUSHGATEWAY_PORT}"
 
     # Kill existing tunnel if any
-    pkill -f "ssh.*${LOADGEN_HOSTNAME}.*${PUSHGATEWAY_PORT}:localhost:${PUSHGATEWAY_PORT}" 2>/dev/null || true
+    pkill -f "ssh.*${PUSHGATEWAY_PORT}:localhost:${PUSHGATEWAY_PORT}.*${LOADGEN_HOSTNAME}" 2>/dev/null || true
 
     # Create reverse tunnel in background
     ssh -i "${ANSIBLE_SSH_KEY}" \
@@ -79,7 +79,7 @@ setup_pushgateway_tunnel() {
     sleep 2
 
     # Verify tunnel
-    if pgrep -f "ssh.*${LOADGEN_HOSTNAME}.*${PUSHGATEWAY_PORT}:localhost:${PUSHGATEWAY_PORT}" > /dev/null; then
+    if pgrep -f "ssh.*${PUSHGATEWAY_PORT}:localhost:${PUSHGATEWAY_PORT}.*${LOADGEN_HOSTNAME}" > /dev/null; then
         echo -e "${GREEN}✓ Pushgateway reverse tunnel established${NC}"
         echo "  Ansible on LOADGEN can now push to: http://localhost:${PUSHGATEWAY_PORT}"
     else
