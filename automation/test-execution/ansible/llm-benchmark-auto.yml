@@ -177,7 +177,7 @@
               Endpoint serving: {{ endpoint_model }}
 
               Either omit test_model to auto-detect, or ensure it matches the running model.
-          when: test_model is defined and test_model != '__AUTO_DETECT__' and test_model != endpoint_model
+          when: test_model is defined and test_model != '__AUTO_DETECT__' and endpoint_model is defined and test_model != endpoint_model
 
         - name: Display model source
           ansible.builtin.debug:
