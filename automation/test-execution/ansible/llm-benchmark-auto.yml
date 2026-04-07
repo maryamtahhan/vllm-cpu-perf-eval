@@ -135,6 +135,7 @@
             headers: "{{ {'Authorization': 'Bearer ' + vllm_api_key_for_models} if (vllm_endpoint.external.api_key.enabled | default(false) | bool and vllm_api_key_for_models is defined) else {} }}"
           register: external_models_response
           delegate_to: localhost
+          when: test_model is not defined or test_model == '__AUTO_DETECT__'
 
         - name: Validate endpoint returned at least one model
           ansible.builtin.assert:
@@ -144,10 +145,12 @@
               External endpoint returned no models.
               URL: {{ vllm_endpoint.external.url }}/v1/models
               Ensure the vLLM server has a model loaded.
+          when: test_model is not defined or test_model == '__AUTO_DETECT__'
 
         - name: Extract model name from endpoint
           ansible.builtin.set_fact:
             endpoint_model: "{{ external_models_response.json.data[0].id }}"
+          when: test_model is not defined or test_model == '__AUTO_DETECT__'
 
         - name: Use endpoint model if test_model not provided or set to auto-detect
           ansible.builtin.set_fact:
