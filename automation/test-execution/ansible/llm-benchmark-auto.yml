@@ -57,12 +57,13 @@
           Note: test_model is optional in external mode (will be queried from endpoint)
       when: vllm_mode == 'external'
 
-    - name: Validate requested_cores is a positive integer
+    - name: Validate requested_cores is a positive integer (managed mode only)
       ansible.builtin.assert:
         that:
           - requested_cores | int > 0
           - requested_cores | int == requested_cores | float
         fail_msg: "requested_cores must be a positive integer, got: {{ requested_cores }}"
+      when: vllm_mode == 'managed'
 
     - name: Validate workload_type is supported
       ansible.builtin.assert:
@@ -118,12 +119,20 @@
               Example:
                 export VLLM_ENDPOINT_URL=http://your-vllm-host:8000
 
+        - name: Resolve API key for model detection
+          ansible.builtin.set_fact:
+            vllm_api_key_for_models: "{{ lookup('env', vllm_endpoint.external.api_key.env_var) }}"
+          when:
+            - vllm_endpoint.external.api_key.enabled | default(false) | bool
+            - vllm_endpoint.external.api_key.source | default('env') == 'env'
+          no_log: true
+
         - name: Get model from external endpoint
           ansible.builtin.uri:
             url: "{{ vllm_endpoint.external.url }}/v1/models"
             method: GET
             status_code: 200
-            headers: "{{ {'Authorization': 'Bearer ' + (vllm_endpoint.external.api_key | default(''))} if (vllm_endpoint.external.api_key_enabled | default(false)) else {} }}"
+            headers: "{{ {'Authorization': 'Bearer ' + vllm_api_key_for_models} if (vllm_endpoint.external.api_key.enabled | default(false) | bool and vllm_api_key_for_models is defined) else {} }}"
           register: external_models_response
           delegate_to: localhost
 

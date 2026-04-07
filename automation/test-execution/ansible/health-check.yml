@@ -8,86 +8,107 @@
   gather_facts: false
 
   tasks:
+    - name: Skip health check for non-vLLM endpoints
+      ansible.builtin.debug:
+        msg:
+          - "⏩ Skipping health check - OpenAI-compatible endpoint"
+          - "Endpoint Type: {{ hostvars['localhost']['vllm_endpoint'].external.type | default('vllm') }}"
+          - "OpenAI-compatible endpoints don't support /health, /metrics, /version"
+      when:
+        - hostvars['localhost']['vllm_mode'] | default('managed') == 'external'
+        - hostvars['localhost']['vllm_endpoint'].external.type | default('vllm') == 'openai-compatible'
+
+    # All tasks below run only for managed mode or external vLLM endpoints
     - name: Display health check configuration
       ansible.builtin.debug:
         msg:
           - "vLLM Server: http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
           - "Timeout: {{ health_check.timeout }}s"
           - "Check Interval: {{ health_check.interval }}s"
+      when: >-
+        hostvars['localhost']['vllm_mode'] | default('managed') == 'managed' or
+        (hostvars['localhost']['vllm_mode'] | default('managed') == 'external' and
+         hostvars['localhost']['vllm_endpoint'].external.type | default('vllm') == 'vllm')
 
-    - name: Wait for vLLM health endpoint
-      ansible.builtin.uri:
-        url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/health"
-        method: GET
-        status_code: 200
-      register: health_check_result
-      retries: "{{ health_check.timeout // health_check.interval }}"
-      delay: "{{ health_check.interval }}"
-      until: health_check_result.status == 200
+    - name: Run vLLM health checks
+      when: >-
+        hostvars['localhost']['vllm_mode'] | default('managed') == 'managed' or
+        (hostvars['localhost']['vllm_mode'] | default('managed') == 'external' and
+         hostvars['localhost']['vllm_endpoint'].external.type | default('vllm') == 'vllm')
+      block:
+        - name: Wait for vLLM health endpoint
+          ansible.builtin.uri:
+            url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/health"
+            method: GET
+            status_code: 200
+          register: health_check_result
+          retries: "{{ health_check.timeout // health_check.interval }}"
+          delay: "{{ health_check.interval }}"
+          until: health_check_result.status == 200
 
-    - name: Display vLLM server status
-      ansible.builtin.debug:
-        msg:
-          - "✓ vLLM Server is READY!"
-          - "Health check response: {{ health_check_result.json | default('OK') }}"
+        - name: Display vLLM server status
+          ansible.builtin.debug:
+            msg:
+              - "✓ vLLM Server is READY!"
+              - "Health check response: {{ health_check_result.json | default('OK') }}"
 
-    - name: Verify vLLM /v1/models endpoint
-      ansible.builtin.uri:
-        url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/v1/models"
-        method: GET
-        status_code: 200
-      register: models_check
+        - name: Verify vLLM /v1/models endpoint
+          ansible.builtin.uri:
+            url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/v1/models"
+            method: GET
+            status_code: 200
+          register: models_check
 
-    - name: Display available models
-      ansible.builtin.debug:
-        msg: "Available models: {{ models_check.json.data | map(attribute='id') | list }}"
+        - name: Display available models
+          ansible.builtin.debug:
+            msg: "Available models: {{ models_check.json.data | map(attribute='id') | list }}"
 
-    - name: Query vLLM version endpoint
-      ansible.builtin.uri:
-        url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/version"
-        method: GET
-        status_code: 200
-      register: vllm_version_response
-      failed_when: false
+        - name: Query vLLM version endpoint
+          ansible.builtin.uri:
+            url: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}/version"
+            method: GET
+            status_code: 200
+          register: vllm_version_response
+          failed_when: false
 
-    - name: Extract vLLM version from response
-      ansible.builtin.set_fact:
-        detected_vllm_version: "{{ vllm_version_response.json.version | default('unknown') }}"
-      when: vllm_version_response.status == 200
+        - name: Extract vLLM version from response
+          ansible.builtin.set_fact:
+            detected_vllm_version: "{{ vllm_version_response.json.version | default('unknown') }}"
+          when: vllm_version_response.status == 200
 
-    - name: Set unknown version if endpoint failed
-      ansible.builtin.set_fact:
-        detected_vllm_version: "unknown"
-      when: vllm_version_response.status != 200
+        - name: Set unknown version if endpoint failed
+          ansible.builtin.set_fact:
+            detected_vllm_version: "unknown"
+          when: vllm_version_response.status != 200
 
-    - name: Save vLLM version to localhost for metadata
-      ansible.builtin.set_fact:
-        vllm_version: "{{ detected_vllm_version }}"
-      delegate_to: localhost
-      delegate_facts: true
+        - name: Save vLLM version to localhost for metadata
+          ansible.builtin.set_fact:
+            vllm_version: "{{ detected_vllm_version }}"
+          delegate_to: localhost
+          delegate_facts: true
 
-    - name: Detect backend from container image or variable
-      ansible.builtin.set_fact:
-        detected_backend: >-
-          {%- if vllm_backend is defined -%}
-            {{ vllm_backend }}
-          {%- elif container_runtime.image is defined and 'release' in container_runtime.image -%}
-            release
-          {%- elif container_runtime.image is defined and 'upstream' in container_runtime.image -%}
-            upstream
-          {%- else -%}
-            upstream
-          {%- endif -%}
+        - name: Detect backend from container image or variable
+          ansible.builtin.set_fact:
+            detected_backend: >-
+              {%- if vllm_backend is defined -%}
+                {{ vllm_backend }}
+              {%- elif container_runtime.image is defined and 'release' in container_runtime.image -%}
+                release
+              {%- elif container_runtime.image is defined and 'upstream' in container_runtime.image -%}
+                upstream
+              {%- else -%}
+                upstream
+              {%- endif -%}
 
-    - name: Save backend type to localhost for metadata
-      ansible.builtin.set_fact:
-        vllm_backend: "{{ detected_backend }}"
-      delegate_to: localhost
-      delegate_facts: true
+        - name: Save backend type to localhost for metadata
+          ansible.builtin.set_fact:
+            vllm_backend: "{{ detected_backend }}"
+          delegate_to: localhost
+          delegate_facts: true
 
-    - name: Display captured metadata
-      ansible.builtin.debug:
-        msg:
-          - "✓ Metadata captured for test results:"
-          - "  vLLM Version: {{ detected_vllm_version }}"
-          - "  Backend: {{ detected_backend }}"
+        - name: Display captured metadata
+          ansible.builtin.debug:
+            msg:
+              - "✓ Metadata captured for test results:"
+              - "  vLLM Version: {{ detected_vllm_version }}"
+              - "  Backend: {{ detected_backend }}"

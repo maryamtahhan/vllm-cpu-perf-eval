@@ -63,7 +63,7 @@
           - base_workload in ['chat', 'rag', 'code', 'summarization']
         fail_msg: "base_workload must be one of: chat, rag, code, summarization"
 
-    - name: Validate required parameters
+    - name: Validate required parameters (managed mode only)
       ansible.builtin.assert:
         that:
           - >-
@@ -77,6 +77,14 @@
 
           The concurrent load test requires at least one core configuration to test.
           This playbook will run 3 phases with the specified core configuration(s).
+      when: vllm_mode == 'managed'
+
+    - name: Set default core count for external mode
+      ansible.builtin.set_fact:
+        requested_cores: 0
+      when:
+        - vllm_mode == 'external'
+        - requested_cores is not defined
 
     - name: Normalize core configuration input
       ansible.builtin.set_fact:
