@@ -127,7 +127,7 @@
             - vllm_endpoint.external.api_key.source | default('env') == 'env'
           no_log: true
 
-        - name: Get model from external endpoint
+        - name: Try to get model from external endpoint /v1/models API
           ansible.builtin.uri:
             url: "{{ vllm_endpoint.external.url }}/v1/models"
             method: GET
@@ -135,30 +135,54 @@
             headers: "{{ {'Authorization': 'Bearer ' + vllm_api_key_for_models} if (vllm_endpoint.external.api_key.enabled | default(false) | bool and vllm_api_key_for_models is defined) else {} }}"
           register: external_models_response
           delegate_to: localhost
+          failed_when: false
           when: test_model is not defined or test_model == '__AUTO_DETECT__'
 
-        - name: Validate endpoint returned at least one model
-          ansible.builtin.assert:
-            that:
-              - external_models_response.json.data | length > 0
-            fail_msg: |
-              External endpoint returned no models.
-              URL: {{ vllm_endpoint.external.url }}/v1/models
-              Ensure the vLLM server has a model loaded.
-          when: test_model is not defined or test_model == '__AUTO_DETECT__'
-
-        - name: Extract model name from endpoint
+        - name: Extract model name from /v1/models response if successful
           ansible.builtin.set_fact:
             endpoint_model: "{{ external_models_response.json.data[0].id }}"
-          when: test_model is not defined or test_model == '__AUTO_DETECT__'
+            model_detection_method: "api"
+          when:
+            - (test_model is not defined or test_model == '__AUTO_DETECT__')
+            - external_models_response.status is defined
+            - external_models_response.status == 200
+            - external_models_response.json.data | length > 0
+
+        - name: Parse HuggingFace URL pattern if /v1/models failed
+          ansible.builtin.set_fact:
+            endpoint_model: "{{ vllm_endpoint.external.url | regex_search('(?:api-inference|router)\\.huggingface\\.co/models/([^/?]+)', '\\1') | first }}"
+            model_detection_method: "url_pattern"
+          when:
+            - (test_model is not defined or test_model == '__AUTO_DETECT__')
+            - endpoint_model is not defined
+            - vllm_endpoint.external.url is search('(?:api-inference|router)\\.huggingface\\.co/models/')
+
+        - name: Fail if model auto-detection unsuccessful and test_model not provided
+          ansible.builtin.fail:
+            msg: |
+              Model auto-detection failed and test_model not specified.
+
+              Tried:
+              1. /v1/models API: {{ 'Success' if (external_models_response.status | default(0) == 200) else 'Failed (' + (external_models_response.status | default('no response') | string) + ')' }}
+              2. HuggingFace URL pattern: {{ 'Not a HuggingFace URL' if not (vllm_endpoint.external.url is search('huggingface\\.co/models/')) else 'Pattern match failed' }}
+
+              Solutions:
+              - Specify model explicitly: -e "test_model=meta-llama/Llama-3.2-1B-Instruct"
+              - Ensure endpoint supports /v1/models API
+              - For HuggingFace, use URL format: https://router.huggingface.co/models/{model-id}
+          when:
+            - (test_model is not defined or test_model == '__AUTO_DETECT__')
+            - endpoint_model is not defined
 
         - name: Use endpoint model if test_model not provided or set to auto-detect
           ansible.builtin.set_fact:
             test_model: "{{ endpoint_model }}"
             actual_model: "{{ endpoint_model }}"
-            model_source: "auto-detected"
+            model_source: "auto-detected ({{ model_detection_method | default('unknown') }})"
             cacheable: true
-          when: test_model is not defined or test_model == '__AUTO_DETECT__'
+          when:
+            - (test_model is not defined or test_model == '__AUTO_DETECT__')
+            - endpoint_model is defined
 
         - name: Set actual_model to test_model if explicitly provided
           ansible.builtin.set_fact:
@@ -181,7 +205,7 @@
 
         - name: Display model source
           ansible.builtin.debug:
-            msg: "Detected model from endpoint: {{ actual_model }}"
+            msg: "{{ 'Detected model from endpoint: ' + actual_model + ' (via ' + (model_detection_method | default('unknown')) + ')' if (model_source is defined and 'auto-detected' in model_source) else 'Using specified model: ' + actual_model }}"
 
     - name: Set actual_model for managed mode
       ansible.builtin.set_fact:
