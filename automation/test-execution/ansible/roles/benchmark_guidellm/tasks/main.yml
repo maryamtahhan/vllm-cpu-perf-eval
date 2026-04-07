@@ -109,7 +109,7 @@
 - name: Prepare GuideLLM environment variables (base)
   ansible.builtin.set_fact:
     guidellm_env:
-      GUIDELLM_TARGET: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
+      GUIDELLM_TARGET: "{{ bench_config.vllm_scheme | default('http') }}://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
       GUIDELLM_PROFILE: "{{ guidellm_cfg.profile }}"
       GUIDELLM_MAX_SECONDS: "{{ guidellm_cfg.max_seconds }}"
       GUIDELLM_MAX_REQUESTS: "{{ guidellm_cfg.max_requests }}"
@@ -300,7 +300,7 @@
   ansible.builtin.set_fact:
     guidellm_cmd_args: >-
       guidellm
-      --target http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}
+      --target {{ bench_config.vllm_scheme | default('http') }}://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}
       --profile {{ guidellm_cfg.profile }}
       {% if guidellm_cfg.profile != 'synchronous' and guidellm_cfg.rate is defined and guidellm_cfg.rate | length > 0 %}
       --rate {{ guidellm_cfg.rate | join(' ') }}
@@ -324,7 +324,7 @@
     cmd: "{{ guidellm_cmd_args }}"
   environment:
     HF_TOKEN: "{{ hf_token | default('') }}"
-    GUIDELLM_TARGET: "http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
+    GUIDELLM_TARGET: "{{ bench_config.vllm_scheme | default('http') }}://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
   register: guidellm_host_result
   changed_when: true
   failed_when: false

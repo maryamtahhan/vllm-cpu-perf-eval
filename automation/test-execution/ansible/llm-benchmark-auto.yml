@@ -351,9 +351,20 @@
               Parsed scheme: {{ external_endpoint_parsed.scheme | default('MISSING') }}
               URL must be a valid HTTP/HTTPS URL with a hostname.
 
+        - name: Determine default port based on scheme
+          ansible.builtin.set_fact:
+            external_endpoint_port: >-
+              {%- if external_endpoint_parsed.port is not none and external_endpoint_parsed.port | length > 0 -%}
+                {{ external_endpoint_parsed.port | int }}
+              {%- elif external_endpoint_parsed.scheme == 'https' -%}
+                443
+              {%- else -%}
+                80
+              {%- endif -%}
+
         - name: Override bench_config for external endpoint
           ansible.builtin.set_fact:
-            bench_config: "{{ bench_config | combine({'vllm_host': external_endpoint_parsed.hostname, 'vllm_port': external_endpoint_parsed.port | default(8000) | int}) }}"
+            bench_config: "{{ bench_config | combine({'vllm_host': external_endpoint_parsed.hostname, 'vllm_port': external_endpoint_port | int, 'vllm_scheme': external_endpoint_parsed.scheme}) }}"
 
         - name: Setup API key if enabled
           ansible.builtin.include_role:
