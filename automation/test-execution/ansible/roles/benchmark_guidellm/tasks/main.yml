@@ -43,7 +43,7 @@
     guidellm_cfg: "{{ guidellm_cfg | combine({
         'profile': guidellm_profile | default(guidellm_cfg.profile | default('sweep')),
         'rate': _rate_list,
-        'container_image': guidellm_container_image | default(guidellm_cfg.container_image | default('ghcr.io/vllm-project/guidellm:v0.5.3')),
+        'container_image': guidellm_container_image | default(guidellm_cfg.container_image | default('ghcr.io/vllm-project/guidellm:v0.6.0')),
         'use_container': guidellm_use_container | default(guidellm_cfg.use_container | default(true)),
         'cpuset_cpus': guidellm_cpuset_cpus | default(guidellm_cfg.cpuset_cpus | default('16-31')),
         'cpuset_mems': guidellm_cpuset_mems | default(guidellm_cfg.cpuset_mems | default('0')),
