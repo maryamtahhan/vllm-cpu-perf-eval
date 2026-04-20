@@ -80,6 +80,10 @@
   ansible.builtin.set_fact:
     resolved_model: "{{ actual_model | default(test_model) }}"
 
+- name: Set processor for tokenizer (can be overridden with guidellm_processor variable)
+  ansible.builtin.set_fact:
+    processor_model: "{{ guidellm_processor | default(resolved_model) }}"
+
 - name: Set results path
   ansible.builtin.set_fact:
     results_path: "{{ bench_config.results_dir }}/{{ resolved_model | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/{{ core_cfg.name }}"
@@ -101,6 +105,7 @@
       - "Image: {{ guidellm_cfg.container_image if use_guidellm_container else 'N/A (using host guidellm)' }}"
       - "Target: http://{{ bench_config.vllm_host }}:{{ bench_config.vllm_port }}"
       - "{{ 'API Key: Enabled' if (vllm_api_key is defined and vllm_api_key | length > 0) else 'API Key: Not configured' }}"
+      - "Model/Processor: {{ processor_model }}"
       - "Workload: {{ workload_type }} (ISL:{{ workload_cfg.isl }}/OSL:{{ workload_cfg.osl }})"
       - "Profile: {{ guidellm_cfg.profile }}"
       - "Rate: {{ 'N/A (synchronous)' if guidellm_cfg.profile == 'synchronous' else guidellm_cfg.rate | default([]) }}"
@@ -129,7 +134,7 @@
       GUIDELLM_MAX_REQUESTS: "{{ guidellm_cfg.max_requests }}"
       GUIDELLM_REQUEST_TIMEOUT: "{{ guidellm_cfg.request_timeout }}"
       GUIDELLM_WARMUP: "{{ guidellm_cfg.warmup }}"
-      GUIDELLM_PROCESSOR: "{{ resolved_model }}"
+      GUIDELLM_PROCESSOR: "{{ processor_model }}"
       GUIDELLM__MAX_CONCURRENCY: "{{ guidellm_cfg.max_concurrency | default(128) }}"
       GUIDELLM__EXCLUDE_THROUGHPUT_TARGET: "{{ guidellm_cfg.exclude_throughput_target | string | lower }}"
       GUIDELLM__EXCLUDE_THROUGHPUT_RESULT: "{{ guidellm_cfg.exclude_throughput_result | string | lower }}"
@@ -454,7 +459,7 @@
       --max-requests {{ guidellm_cfg.max_requests }}
       --warmup {{ guidellm_cfg.warmup }}
       --data "{{ guidellm_data_string }}"
-      --processor "{{ resolved_model }}"
+      --processor "{{ processor_model }}"
       --cooldown {{ guidellm_cfg.cooldown }}
       --outputs {{ guidellm_cfg.outputs }}
       --output-dir {{ results_path }}
