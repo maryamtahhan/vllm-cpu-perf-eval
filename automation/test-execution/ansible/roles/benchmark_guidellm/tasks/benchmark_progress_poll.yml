@@ -3,11 +3,13 @@
     cmd: "podman ps --format {{ '{{.Names}}' }}"
   register: guidellm_ps_check
   changed_when: false
+  no_log: true
 
 - name: Compute elapsed benchmark time (containerized)
   ansible.builtin.set_fact:
     guidellm_elapsed_seconds: "{{ (lookup('pipe', 'date +%s') | int) - (guidellm_wait_start_epoch | int) }}"
     guidellm_container_running: "{{ guidellm_container_name in guidellm_ps_check.stdout_lines }}"
+  no_log: true
 
 - name: Build progress message (containerized)
   ansible.builtin.set_fact:
@@ -15,6 +17,14 @@
       {{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }} | RUNNING |
       elapsed={{ '%02d' | format(((guidellm_elapsed_seconds | int) // 60) | int) }}:{{ '%02d' | format(((guidellm_elapsed_seconds | int) % 60) | int) }}
   when: guidellm_container_running | bool
+  no_log: true
+
+- name: "⏳ Benchmark progress: elapsed={{ '%02d' | format(((guidellm_elapsed_seconds | int) // 60) | int) }}:{{ '%02d' | format(((guidellm_elapsed_seconds | int) % 60) | int) }}"
+  ansible.builtin.set_fact:
+    _dummy: true
+  when:
+    - guidellm_container_running | bool
+    - (guidellm_progress_message | trim) != (guidellm_last_progress_message | trim)
 
 - name: Append benchmark progress to controller-side log only when message changes
   ansible.builtin.shell: >-
@@ -24,11 +34,13 @@
   when:
     - guidellm_container_running | bool
     - (guidellm_progress_message | trim) != (guidellm_last_progress_message | trim)
+  no_log: true
 
 - name: Remember last benchmark progress message
   ansible.builtin.set_fact:
     guidellm_last_progress_message: "{{ guidellm_progress_message | trim }}"
   when: guidellm_container_running | bool
+  no_log: true
 
 - name: Fail if safety timeout is exceeded while waiting for benchmark completion (containerized)
   ansible.builtin.fail:
@@ -38,7 +50,7 @@
     - guidellm_container_running | bool
     - (guidellm_elapsed_seconds | int) >= (guidellm_wait_timeout_seconds | int)
 
-- name: Pause before next benchmark status check (containerized)
+- name: Wait before next status check
   ansible.builtin.pause:
     seconds: "{{ guidellm_poll_seconds }}"
   when: guidellm_container_running | bool
@@ -46,3 +58,4 @@
 - name: Continue polling while benchmark is still running (containerized)
   ansible.builtin.include_tasks: benchmark_progress_poll.yml
   when: guidellm_container_running | bool
+  no_log: true
