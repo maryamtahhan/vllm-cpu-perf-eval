@@ -44,7 +44,7 @@
         'profile': guidellm_profile | default(guidellm_cfg.profile | default('sweep')),
         'rate': _rate_list,
         'container_image': guidellm_container_image | default(guidellm_cfg.container_image | default('ghcr.io/vllm-project/guidellm:v0.5.3')),
-        'use_container': guidellm_cfg.use_container | default(guidellm_use_container | default(true)),
+        'use_container': (guidellm_use_container if (guidellm_use_container is defined and guidellm_use_container is not none) else (guidellm_cfg.use_container | default(true))),
         'cpuset_cpus': guidellm_cpuset_cpus | default(guidellm_cfg.cpuset_cpus | default('16-31')),
         'cpuset_mems': guidellm_cpuset_mems | default(guidellm_cfg.cpuset_mems | default('0')),
         'max_seconds': guidellm_max_seconds | default(guidellm_cfg.max_seconds | default(600)),
@@ -61,7 +61,7 @@
 
 - name: Set GuideLLM execution mode
   ansible.builtin.set_fact:
-    use_guidellm_container: "{{ guidellm_cfg.use_container | default(guidellm_use_container | default(true)) | bool }}"
+    use_guidellm_container: "{{ guidellm_cfg.use_container | bool }}"
 
 - name: Extract GuideLLM version from container image
   ansible.builtin.set_fact:
