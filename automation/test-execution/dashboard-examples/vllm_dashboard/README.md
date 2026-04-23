@@ -6,11 +6,12 @@ Comprehensive performance analysis dashboard for vLLM CPU benchmarks.
 
 **Single URL Access**: All dashboards accessible from `http://localhost:8501`
 
-**Four Views**:
+**Five Views**:
 - 🏠 **Home** - Overview, quick start, system status
-- 📊 **Client Metrics** - GuideLLM performance analysis
+- 📊 **Client Metrics** - GuideLLM performance analysis (LLM models)
 - 🖥️ **Server Metrics** - vLLM server-side metrics
 - 🔄 **Unified View** - Combined client + server correlation
+- 🎧 **Audio Metrics** - Audio-specific performance (ASR/translation/chat)
 
 **Navigation**: Use the sidebar to switch between views
 
@@ -129,6 +130,41 @@ Percentile definition: Pxx = the value below which xx% of data points fall
 - Performance validation
 - Troubleshooting
 
+### 🎧 Audio Metrics
+
+**Source**: GuideLLM audio benchmark results (`benchmarks.json` + `test-metadata.json`)
+
+**Audio-Specific Metrics**:
+- **Audio Throughput** (audio_sec/wall_sec) - How many seconds of audio processed per wall-clock second
+- **Real-Time Factor (RTF)** - Processing time / audio duration (< 1.0 = faster than real-time)
+- **Request Throughput** (files/sec) - Audio files processed per second
+- **Efficiency** - Audio throughput per CPU core
+
+**Metric Families**:
+- Audio throughput by stage and model
+- RTF percentiles (Mean, P50, P95, P99) - Lower is better
+- Latency vs audio duration scaling
+- Request throughput comparison
+- Per-core efficiency
+
+**Features**:
+- **Stage-based analysis**: Sequential, concurrent-N, max-throughput
+- **RTF visualization**: Shows if processing is faster/slower than real-time
+- **Latency scaling**: How processing time scales with audio length
+- **Model comparison**: Compare Whisper tiny/small/medium
+- **CSV export**: Download filtered data
+
+**Understanding RTF (Real-Time Factor)**:
+- **RTF < 1.0** = Processing faster than real-time ✓ (e.g., RTF=0.1 means 10x faster)
+- **RTF = 1.0** = Processing at real-time speed
+- **RTF > 1.0** = Processing slower than real-time ⚠️ (e.g., RTF=2.0 means 2x slower)
+
+Example: If RTF=0.2, a 10-second audio clip is processed in 2 seconds.
+
+**Supported Models**:
+- Whisper (tiny, small, medium) - ASR transcription
+- Ultravox - Audio chat
+
 ## Stopping
 
 ```bash
@@ -188,9 +224,11 @@ cd ../
 vllm_dashboard/
 ├── Home.py                           # Main entry point (run this)
 ├── pages/
-│   ├── 1_📊_Client_Metrics.py       # GuideLLM analysis
+│   ├── 1_📊_Client_Metrics.py       # GuideLLM analysis (LLM models)
 │   ├── 2_🖥️_Server_Metrics.py       # vLLM server metrics
-│   └── 3_🔄_Unified_View.py         # Combined view
+│   ├── 3_🔄_Unified_View.py         # Combined view
+│   └── 4_🎧_Audio_Metrics.py        # Audio-specific metrics
+├── config_manager.py                 # Dashboard configuration
 ├── launch-dashboard.sh               # Start script
 ├── stop-dashboard.sh                 # Stop script
 └── README.md                         # This file

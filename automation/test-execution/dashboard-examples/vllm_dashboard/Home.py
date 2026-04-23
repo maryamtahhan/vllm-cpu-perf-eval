@@ -45,12 +45,13 @@ st.markdown("---")
 st.markdown("""
 ### Welcome!
 
-This dashboard suite provides three complementary views of your
+This dashboard suite provides four complementary views of your
 vLLM CPU benchmark results:
 
-📊 **Client-Side Metrics** - End-user performance (GuideLLM)
+📊 **Client-Side Metrics** - End-user performance (GuideLLM) for LLM models
 🖥️ **Server-Side Metrics** - Internal server (vLLM metrics)
 🔄 **Unified View** - Combined client + server correlation
+🎧 **Audio Metrics** - Audio-specific performance for ASR/translation/chat models
 
 **👈 Use the sidebar to navigate between dashboards**
 """)
@@ -58,12 +59,12 @@ vLLM CPU benchmark results:
 st.markdown("---")
 
 # Dashboard overview cards
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### 📊 Client-Side")
+    st.markdown("### 📊 Client-Side (LLM)")
     st.info("""
-    **What**: GuideLLM benchmark results
+    **What**: GuideLLM benchmark results for LLM models
 
     **Metrics**:
     - Throughput (tokens/sec)
@@ -79,6 +80,26 @@ with col1:
     """)
 
 with col2:
+    st.markdown("### 🎧 Audio Metrics")
+    st.info("""
+    **What**: Audio-specific performance (ASR/translation/chat)
+
+    **Metrics**:
+    - Audio throughput (audio_sec/wall_sec)
+    - Real-Time Factor (RTF)
+    - Request throughput (files/sec)
+    - Efficiency (per core)
+
+    **Features**:
+    - RTF percentile analysis
+    - Audio duration scaling
+    - Model comparison
+    - CSV export
+    """)
+
+col3, col4 = st.columns(2)
+
+with col3:
     st.markdown("### 🖥️ Server-Side")
     st.info("""
     **What**: vLLM server metrics (Prometheus)
@@ -95,7 +116,7 @@ with col2:
     - Raw data inspection
     """)
 
-with col3:
+with col4:
     st.markdown("### 🔄 Unified")
     st.info("""
     **What**: Client + Server combined
@@ -123,7 +144,7 @@ with tab1:
     st.markdown("""
     #### Running Benchmarks
 
-    **Managed Mode (Default)** - vLLM runs on DUT:
+    **LLM Models** - Text generation:
     ```bash
     # Single test
     ansible-playbook llm-benchmark-auto.yml \\
@@ -138,6 +159,22 @@ with tab1:
       -e "requested_cores_list=[8,16,32,64]"
     ```
 
+    **Audio Models** - ASR, translation, audio chat:
+    ```bash
+    # Quick test (5 files, ~2 minutes)
+    ansible-playbook audio-benchmark.yml \\
+      -e "test_model=openai/whisper-tiny" \\
+      -e "test_scenario=transcription-throughput" \\
+      -e "requested_cores=32" \\
+      -e "audio_num_files=5"
+
+    # Production test (100 files per stage)
+    ansible-playbook audio-benchmark.yml \\
+      -e "test_model=openai/whisper-small" \\
+      -e "test_scenario=transcription-throughput" \\
+      -e "requested_cores=32"
+    ```
+
     **External Endpoint Mode** - Test existing vLLM deployment:
     ```bash
     export VLLM_ENDPOINT_MODE=external
@@ -149,9 +186,11 @@ with tab1:
       -e "requested_cores=16"
     ```
 
-    **Results are automatically saved to:** `results/llm/`
+    **Results locations:**
+    - LLM models: `results/llm/`
+    - Audio models: `results/audio-models/`
 
-    Each dashboard loads from this directory - just run a test and refresh!
+    Each dashboard loads from these directories - just run a test and refresh!
 
     **Note**: External endpoint runs always show client metrics. Server-side metrics are
     available when the external endpoint exposes `/metrics`.
@@ -166,9 +205,14 @@ with tab2:
     3. **Apply filters** to focus on specific tests
     4. **Analyze performance** using charts and metrics
 
-    **Default Results Path**: `../../../results/llm`
+    **Default Results Paths**:
+    - LLM models: `../../../results/llm`
+    - Audio models: `../../../results/audio-models`
 
-    You can change this path in each dashboard's sidebar configuration.
+    You can change the path in each dashboard's sidebar configuration.
+
+    **For audio results**: Go to 🎧 Audio Metrics page and update the results
+    directory to `../../../results/audio-models`
     """)
 
 with tab3:
