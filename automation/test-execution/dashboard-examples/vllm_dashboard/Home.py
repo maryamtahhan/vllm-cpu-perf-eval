@@ -39,6 +39,10 @@ st.markdown("""
 # Header
 st.title("🚀 vLLM CPU Performance Dashboards")
 st.markdown("**Comprehensive performance analysis for vLLM CPU benchmarks**")
+
+# Disclaimer
+st.warning("⚠️ **Performance Data Disclaimer** — Red Hat Confidential. Disclosure requires signed NDA. External publication needs approval.")
+
 st.markdown("---")
 
 # Welcome section

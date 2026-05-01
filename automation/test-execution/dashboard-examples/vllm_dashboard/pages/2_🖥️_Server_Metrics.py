@@ -41,6 +41,9 @@ st.markdown("""
 # Title
 st.title("🖥️ vLLM Server-Side Metrics Analysis")
 
+# Disclaimer
+st.warning("⚠️ **Performance Data Disclaimer** — Red Hat Confidential. Disclosure requires signed NDA. External publication needs approval.")
+
 # Sidebar configuration
 st.sidebar.header("Configuration")
 

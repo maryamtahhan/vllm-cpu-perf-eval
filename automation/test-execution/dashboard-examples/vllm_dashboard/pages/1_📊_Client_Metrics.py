@@ -1107,6 +1107,9 @@ def render_dashboard():
     st.title("🚀 vLLM CPU Performance Dashboard")
     st.markdown("Comprehensive analysis of vLLM CPU inference performance")
 
+    # Disclaimer
+    st.warning("⚠️ **Performance Data Disclaimer** — Red Hat Confidential. Disclosure requires signed NDA. External publication needs approval.")
+
     # Sidebar configuration
     st.sidebar.header("Configuration")
 
