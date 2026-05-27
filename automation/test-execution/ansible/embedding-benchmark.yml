@@ -6,6 +6,9 @@
   hosts: localhost
   gather_facts: false
   any_errors_fatal: true
+  tags:
+    - embedding
+    - guard
   vars:
     test_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
@@ -55,6 +58,10 @@
 - name: Initialize embedding benchmark run metadata
   hosts: localhost
   gather_facts: false
+  tags:
+    - embedding
+    - benchmark
+    - init
   tasks:
     - name: Generate test run ID
       ansible.builtin.set_fact:
@@ -75,6 +82,11 @@
   hosts: dut
   become: true
   gather_facts: false
+  tags:
+    - embedding
+    - benchmark
+    - phase1
+    - server
   vars:
     test_model: "{{ test_model | default('ibm-granite/granite-embedding-278m-multilingual') }}"
     workload_type: embedding
@@ -89,6 +101,11 @@
 - name: "Phase 2 - Wait for vLLM Server to be Ready"
   hosts: load_generator
   gather_facts: false
+  tags:
+    - embedding
+    - benchmark
+    - phase2
+    - health
 
   tasks:
     - name: Set vLLM server connection details for health check

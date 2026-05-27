@@ -15,6 +15,10 @@
   hosts: dut,load_generator
   become: true
   gather_facts: true
+  tags:
+    - setup
+    - platform
+    - topology
 
   tasks:
     - name: Detect NUMA topology
@@ -28,6 +32,11 @@
 - name: "Platform Setup - Install Required Tools"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - install
+    - packages
 
   tasks:
     - name: Install tuning tools and container runtime
@@ -42,6 +51,11 @@
 - name: "Platform Setup - Disable irqbalance"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - irq
 
   tasks:
     - name: Disable and stop irqbalance
@@ -54,6 +68,11 @@
 - name: "Platform Setup - Configure Systemd CPU Pinning"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - cpu
   vars:
     housekeeping_cpus: "{{ host_numa_topology.housekeeping.cpus }}"
 
@@ -103,6 +122,11 @@
 - name: "Platform Setup - Create Tuned Profile"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - tuning
   vars:
     housekeeping_cpus: "{{ host_numa_topology.housekeeping.cpus }}"
     isolated_cpus: "{{ [host_numa_topology.guidellm.cpus, host_numa_topology.vllm.cpus] | join(',') }}"
@@ -179,6 +203,11 @@
 - name: "Platform Setup - Optional NUMA Balancing"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - numa
 
   tasks:
     - name: Disable NUMA balancing (persistent)
@@ -201,6 +230,11 @@
 - name: "Platform Setup - Optional THP Defrag"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - thp
 
   tasks:
     - name: Check current transparent hugepage defrag setting
@@ -247,6 +281,12 @@
 - name: "Platform Setup - Set CPU Frequency Governor"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - configure
+    - cpu
+    - governor
 
   tasks:
     - name: Check current CPU governor
@@ -266,6 +306,10 @@
 - name: "Platform Setup - Summary"
   hosts: dut,load_generator
   become: true
+  tags:
+    - setup
+    - platform
+    - summary
   vars:
     housekeeping_cpus: "{{ host_numa_topology.housekeeping.cpus }}"
     guidellm_cpus: "{{ host_numa_topology.guidellm.cpus }}"

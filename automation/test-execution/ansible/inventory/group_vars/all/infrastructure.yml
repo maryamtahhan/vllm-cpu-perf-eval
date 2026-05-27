@@ -34,6 +34,16 @@ container_runtime:
   network_mode: "host"
   shm_size: "4g"
 
+# vLLM Server Configuration Defaults
+vllm_server_defaults:
+  # Wait time after container start (seconds)
+  init_wait_seconds: 10
+  cleanup_wait_seconds: 5
+
+  # Model configuration defaults
+  model_dtype: "bfloat16"
+  model_max_len: 512
+
 # Health check configuration
 health_check:
   # Total timeout in seconds (can be overridden with VLLM_HEALTH_TIMEOUT env var)
