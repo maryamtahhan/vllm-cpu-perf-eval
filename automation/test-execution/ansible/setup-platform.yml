@@ -203,13 +203,21 @@
   become: true
 
   tasks:
+    - name: Check current transparent hugepage defrag setting
+      ansible.builtin.command:
+        cmd: cat /sys/kernel/mm/transparent_hugepage/defrag
+      register: thp_defrag_current
+      changed_when: false
+      when: platform_setup.thp_defrag_never | default(false)
+
     - name: Set THP defrag to never (runtime)
       ansible.builtin.shell: |
         echo never > /sys/kernel/mm/transparent_hugepage/defrag
       args:
         executable: /bin/bash
-      changed_when: false
-      when: platform_setup.thp_defrag_never | default(false)
+      when:
+        - platform_setup.thp_defrag_never | default(false)
+        - "'[never]' not in thp_defrag_current.stdout"
 
     - name: Create THP defrag systemd service
       ansible.builtin.copy:
@@ -241,11 +249,18 @@
   become: true
 
   tasks:
+    - name: Check current CPU governor
+      ansible.builtin.command:
+        cmd: cpupower frequency-info -p
+      register: cpu_governor_current
+      changed_when: false
+      failed_when: false
+
     - name: Set CPU governor to performance (runtime)
       ansible.builtin.command:
         cmd: cpupower frequency-set -g performance
+      when: "'performance' not in cpu_governor_current.stdout"
       register: cpupower_result
-      changed_when: cpupower_result.rc == 0
       failed_when: false
 
 - name: "Platform Setup - Summary"

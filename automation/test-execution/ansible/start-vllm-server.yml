@@ -38,7 +38,7 @@
       ignore_errors: true
       when: vllm_server.container_runtime == 'podman'
 
-    - name: Start vLLM server in container (with CPU pinning)
+    - name: Start vLLM server in container
       containers.podman.podman_container:
         name: "{{ container_name }}"
         image: "{{ vllm_server.container_image }}"
@@ -46,7 +46,7 @@
         restart_policy: "no"
         detach: true
         network: host
-        cpuset_cpus: "{{ cpu_cores }}"
+        cpuset_cpus: "{{ cpu_cores if cpu_cores != '' else omit }}"
         volumes:
           - "{{ model_cache_dir }}:/root/.cache/huggingface:rw"
           - "{{ log_dir }}:/var/log/vllm:rw"
@@ -55,45 +55,13 @@
           --model {{ model_name }}
           --host {{ vllm_server.host }}
           --port {{ vllm_server.port }}
-          --dtype bfloat16
-          --max-model-len 512
+          --dtype {{ model_dtype | default('bfloat16') }}
+          --max-model-len {{ model_max_len | default(512) }}
         log_driver: journald
         log_opt:
           tag: "vllm-{{ model_name | replace('/', '__') }}"
-      when:
-        - vllm_server.container_runtime == 'podman'
-        - cpu_cores != ''
-      register: vllm_container_pinned
-
-    - name: Start vLLM server in container (no CPU pinning)
-      containers.podman.podman_container:
-        name: "{{ container_name }}"
-        image: "{{ vllm_server.container_image }}"
-        state: started
-        restart_policy: "no"
-        detach: true
-        network: host
-        volumes:
-          - "{{ model_cache_dir }}:/root/.cache/huggingface:rw"
-          - "{{ log_dir }}:/var/log/vllm:rw"
-        env: "{{ vllm_env }}"
-        command: >
-          --model {{ model_name }}
-          --host {{ vllm_server.host }}
-          --port {{ vllm_server.port }}
-          --dtype bfloat16
-          --max-model-len 512
-        log_driver: journald
-        log_opt:
-          tag: "vllm-{{ model_name | replace('/', '__') }}"
-      when:
-        - vllm_server.container_runtime == 'podman'
-        - cpu_cores == ''
-      register: vllm_container_no_pin
-
-    - name: Set container result
-      ansible.builtin.set_fact:
-        vllm_container: "{{ vllm_container_pinned if cpu_cores != '' else vllm_container_no_pin }}"
+      when: vllm_server.container_runtime == 'podman'
+      register: vllm_container
 
     - name: Display vLLM container start info
       ansible.builtin.debug:
@@ -107,5 +75,5 @@
 
     - name: Wait for container initialization
       ansible.builtin.pause:
-        seconds: 10
+        seconds: "{{ vllm_init_wait_seconds | default(10) }}"
         prompt: "Waiting for vLLM container to initialize..."

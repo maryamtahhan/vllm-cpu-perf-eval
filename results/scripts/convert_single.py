@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils.json_utils import load_json_safe
+
 
 def load_test_metadata(metadata_path):
     """Load test metadata from test-metadata.json.
@@ -24,15 +26,7 @@ def load_test_metadata(metadata_path):
     Returns:
         dict: Test metadata including CPU configuration.
     """
-    try:
-        with open(metadata_path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"Warning: Metadata file not found at {metadata_path}")
-        return {}
-    except json.JSONDecodeError:
-        print(f"Warning: Could not decode metadata JSON from {metadata_path}")
-        return {}
+    return load_json_safe(metadata_path, default={})
 
 
 def parse_vllm_metrics(vllm_metrics_path):
@@ -589,13 +583,12 @@ def parse_guidellm_json(
             workload = workload_mapping.get(workload_name, workload_name)
 
     try:
-        with open(json_path) as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: JSON file not found at {json_path}")
-        return None
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from {json_path}")
+        data = load_json_safe(json_path)
+        if not data:
+            print(f"Error: Could not load JSON from {json_path}")
+            return None
+    except Exception as e:
+        print(f"Error: Failed to load JSON from {json_path}: {e}")
         return None
 
     # Check guidellm version
