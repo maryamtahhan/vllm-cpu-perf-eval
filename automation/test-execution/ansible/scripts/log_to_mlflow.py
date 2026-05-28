@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from utils.json_utils import load_json_file
+from utils.vllm_metrics_parser import VLLMMetricsParser
 
 try:
     import mlflow
@@ -258,6 +259,8 @@ def extract_aggregate_metrics(
 def extract_server_metrics(vllm_metrics_file: Path) -> Dict[str, float]:
     """Extract key server-side metrics from vLLM metrics JSON.
 
+    This now uses the shared VLLMMetricsParser for consistent metrics extraction.
+
     Args:
         vllm_metrics_file: Path to vllm-metrics.json
 
@@ -265,161 +268,8 @@ def extract_server_metrics(vllm_metrics_file: Path) -> Dict[str, float]:
         Dictionary of server metrics with 'server_' prefix
     """
     try:
-        vllm_data = load_json_file(vllm_metrics_file)
-        samples = vllm_data.get('samples', [])
-
-        if not samples:
-            return {}
-
-        # Use the last sample (end of test) for cumulative metrics
-        last_sample = samples[-1]
-        metrics_data = last_sample.get('metrics', {})
-
-        server_metrics = {}
-
-        # Helper to extract single value from metric
-        def get_value(metric_list):
-            if metric_list and len(metric_list) > 0:
-                return metric_list[0].get('value', 0)
-            return 0
-
-        # KV Cache utilization (%)
-        kv_cache = metrics_data.get('vllm:kv_cache_usage_perc', [])
-        if kv_cache:
-            server_metrics['server_kv_cache_usage_pct'] = (
-                get_value(kv_cache)
-            )
-
-        # Total tokens processed
-        prompt_tokens = get_value(
-            metrics_data.get('vllm:prompt_tokens_total', [])
-        )
-        generation_tokens = get_value(
-            metrics_data.get('vllm:generation_tokens_total', [])
-        )
-        if prompt_tokens > 0:
-            server_metrics['server_prompt_tokens_total'] = prompt_tokens
-        if generation_tokens > 0:
-            server_metrics['server_generation_tokens_total'] = generation_tokens
-        if prompt_tokens > 0 and generation_tokens > 0:
-            server_metrics['server_total_tokens'] = (
-                prompt_tokens + generation_tokens
-            )
-
-        # Cache hit rates
-        prefix_hits = get_value(
-            metrics_data.get('vllm:prefix_cache_hits_total', [])
-        )
-        prefix_queries = get_value(
-            metrics_data.get('vllm:prefix_cache_queries_total', [])
-        )
-        if prefix_queries > 0:
-            server_metrics['server_prefix_cache_hit_rate'] = (
-                (prefix_hits / prefix_queries) * 100
-            )
-
-        # Request success rate
-        success_total = get_value(
-            metrics_data.get('vllm:request_success_total', [])
-        )
-        # Get total requests from histogram count
-        e2e_count = get_value(
-            metrics_data.get('vllm:e2e_request_latency_seconds_count', [])
-        )
-        if e2e_count > 0:
-            server_metrics['server_requests_total'] = e2e_count
-            server_metrics['server_request_success_rate'] = (
-                (success_total / e2e_count) * 100
-            )
-
-        # Average latencies from histogram sums and counts
-        # TTFT
-        ttft_sum = get_value(
-            metrics_data.get('vllm:time_to_first_token_seconds_sum', [])
-        )
-        ttft_count = get_value(
-            metrics_data.get('vllm:time_to_first_token_seconds_count', [])
-        )
-        if ttft_count > 0:
-            server_metrics['server_ttft_avg_ms'] = (ttft_sum / ttft_count) * 1000
-
-        # E2E latency
-        e2e_sum = get_value(
-            metrics_data.get('vllm:e2e_request_latency_seconds_sum', [])
-        )
-        if e2e_count > 0:
-            server_metrics['server_e2e_latency_avg_s'] = e2e_sum / e2e_count
-
-        # Prefill time
-        prefill_sum = get_value(
-            metrics_data.get('vllm:request_prefill_time_seconds_sum', [])
-        )
-        prefill_count = get_value(
-            metrics_data.get('vllm:request_prefill_time_seconds_count', [])
-        )
-        if prefill_count > 0:
-            server_metrics['server_prefill_time_avg_ms'] = (prefill_sum / prefill_count) * 1000
-
-        # Decode time
-        decode_sum = get_value(
-            metrics_data.get('vllm:request_decode_time_seconds_sum', [])
-        )
-        decode_count = get_value(
-            metrics_data.get('vllm:request_decode_time_seconds_count', [])
-        )
-        if decode_count > 0:
-            server_metrics['server_decode_time_avg_ms'] = (decode_sum / decode_count) * 1000
-
-        # Queue time
-        queue_sum = get_value(
-            metrics_data.get('vllm:request_queue_time_seconds_sum', [])
-        )
-        queue_count = get_value(
-            metrics_data.get('vllm:request_queue_time_seconds_count', [])
-        )
-        if queue_count > 0:
-            server_metrics['server_queue_time_avg_ms'] = (queue_sum / queue_count) * 1000
-
-        # CPU time
-        cpu_seconds = get_value(metrics_data.get('process_cpu_seconds_total', []))
-        if cpu_seconds > 0:
-            server_metrics['server_cpu_seconds_total'] = cpu_seconds
-
-        # Memory usage (convert to MB)
-        resident_mem = get_value(metrics_data.get('process_resident_memory_bytes', []))
-        if resident_mem > 0:
-            server_metrics['server_memory_mb'] = resident_mem / (1024 * 1024)
-
-        # Preemptions
-        preemptions = get_value(metrics_data.get('vllm:num_preemptions_total', []))
-        if preemptions > 0:
-            server_metrics['server_num_preemptions'] = preemptions
-
-        # Average tokens per request
-        gen_tokens_sum = get_value(
-            metrics_data.get('vllm:request_generation_tokens_sum', [])
-        )
-        gen_tokens_count = get_value(
-            metrics_data.get('vllm:request_generation_tokens_count', [])
-        )
-        if gen_tokens_count > 0:
-            server_metrics['server_avg_output_tokens_per_req'] = (
-                gen_tokens_sum / gen_tokens_count
-            )
-
-        prompt_tokens_sum = get_value(
-            metrics_data.get('vllm:request_prompt_tokens_sum', [])
-        )
-        prompt_tokens_count = get_value(
-            metrics_data.get('vllm:request_prompt_tokens_count', [])
-        )
-        if prompt_tokens_count > 0:
-            server_metrics['server_avg_prompt_tokens_per_req'] = (
-                prompt_tokens_sum / prompt_tokens_count
-            )
-
-        return server_metrics
-
+        parser = VLLMMetricsParser(vllm_metrics_file)
+        return parser.extract_simple_metrics()
     except Exception as e:
         print(
             f"Warning: Could not parse vLLM server metrics: {e}",
