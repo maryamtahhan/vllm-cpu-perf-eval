@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from utils.json_utils import load_json_safe
+from utils.vllm_metrics_parser import parse_vllm_metrics
 
 
 def load_test_metadata(metadata_path):
