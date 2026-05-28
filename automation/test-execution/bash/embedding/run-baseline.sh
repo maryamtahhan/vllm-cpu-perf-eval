@@ -8,6 +8,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../../" && pwd)"
 
+# Source common functions
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
 # Default values
 VLLM_HOST="${VLLM_HOST:-localhost}"
 VLLM_PORT="${VLLM_PORT:-8000}"
@@ -15,13 +19,6 @@ MODEL="${1:-ibm-granite/granite-embedding-278m-multilingual}"
 RESULTS_DIR="${RESULTS_DIR:-${PROJECT_ROOT}/results/embedding-models}"
 NUM_PROMPTS="${NUM_PROMPTS:-1000}"
 INPUT_LEN="${INPUT_LEN:-512}"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 
 usage() {
     cat <<EOF
@@ -69,35 +66,9 @@ done
 # ════════════════════════════════════════════════════════════════════════════════
 # ❌ BLOCK UNSUPPORTED TEST SUITE
 # ════════════════════════════════════════════════════════════════════════════════
-if [[ "${ALLOW_UNSUPPORTED_TESTS:-false}" != "true" ]]; then
-    echo -e "" >&2
-    echo -e "${RED}❌ EMBEDDING MODELS TEST SUITE NOT YET SUPPORTED${NC}" >&2
-    echo -e "" >&2
-    echo -e "This script (run-baseline.sh) is blocked because the Embedding Models test" >&2
-    echo -e "suite is still work in progress and not validated for end users." >&2
-    echo -e "" >&2
-    echo -e "${GREEN}✅ USE SUPPORTED TESTS INSTEAD:${NC}" >&2
-    echo -e "" >&2
-    echo -e "Concurrent Load Testing (Phase 1 & Phase 2) is fully validated for LLM models." >&2
-    echo -e "" >&2
-    echo -e "  cd ${PROJECT_ROOT}/automation/test-execution/ansible" >&2
-    echo -e "  ansible-playbook -i inventory/hosts.yml llm-benchmark-concurrent-load.yml \\" >&2
-    echo -e "    -e \"test_model=TinyLlama/TinyLlama-1.1B-Chat-v1.0\" \\" >&2
-    echo -e "    -e \"base_workload=chat\" \\" >&2
-    echo -e "    -e \"core_sweep_counts=[16,32,64]\" \\" >&2
-    echo -e "    -e \"skip_phase_3=true\"" >&2
-    echo -e "" >&2
-    echo -e "${BLUE}📚 See: tests/concurrent-load/concurrent-load.md | README.md${NC}" >&2
-    echo -e "" >&2
-    echo -e "${YELLOW}To bypass (development only): export ALLOW_UNSUPPORTED_TESTS=true${NC}" >&2
-    echo -e "" >&2
-    exit 1
-fi
+check_unsupported_guard "run-baseline.sh"
 
-# Functions
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $*"
-}
+# Functions specific to baseline test
 
 log_warn() {
     echo -e "${YELLOW}[WARN]${NC} $*"
