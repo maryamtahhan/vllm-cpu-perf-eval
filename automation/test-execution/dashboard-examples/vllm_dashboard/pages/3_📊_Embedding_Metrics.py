@@ -1064,6 +1064,16 @@ def plot_mteb_quality_metrics(df: pd.DataFrame):
                    'STSBenchmark', 'SICKRelatedness']
     }
 
+    # Identify unmapped tasks (tasks in data but not in any domain)
+    all_mapped_tasks = set()
+    for tasks in task_domains.values():
+        all_mapped_tasks.update(tasks)
+    unmapped_tasks = [t for t in benchmark_filtered_tasks if t not in all_mapped_tasks]
+
+    # Add unmapped tasks to synthetic "Other" domain if any exist
+    if unmapped_tasks:
+        task_domains['Other'] = unmapped_tasks
+
     # Create domain filter
     st.markdown("### 🏷️ Task Selection")
     col1, col2 = st.columns([1, 2])
