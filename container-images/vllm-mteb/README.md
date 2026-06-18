@@ -43,7 +43,41 @@ This integration complements your existing **performance benchmarks** (throughpu
 Custom MTEB encoder that communicates with vLLM via HTTP API:
 
 - **`VllmCPUEncoderWrapper`** - HTTP-based wrapper for remote vLLM servers
-- **`VllmCPULocalWrapper`** - Direct vLLM integration (for local testing)
+
+**Why a Custom Wrapper?**
+
+MTEB includes a default `vllm_wrapper.py`, but it has several limitations for our use case:
+
+| Feature | MTEB Default (`vllm_wrapper.py`) | Our Custom Wrapper | Impact |
+|---------|----------------------------------|-------------------|--------|
+| **Endpoint Type** | Local in-process only (`vllm.LLM()`) | HTTP endpoints (`/v1/embeddings`) | ✅ Can test remote servers |
+| **Server Reuse** | Creates new vLLM instance per run | Reuses running server | ✅ Faster tests, less memory |
+| **Backend Support** | GPU-only (assumes `gpu_memory_utilization=0.9`) | CPU or GPU via HTTP | ✅ Works with vLLM CPU builds |
+| **Remote Testing** | Not supported | Full support | ✅ Test RHAIIS, remote endpoints |
+| **Truncation** | Manual (`truncate_prompt_tokens=-1`) | Auto-detection + truncation | ✅ Handles long inputs automatically |
+| **SSL Control** | Not applicable | `verify_ssl` parameter | ✅ Works in test environments |
+| **Validation** | Basic | Enhanced incomplete response checks | ✅ Better error detection |
+
+**Key Differences:**
+
+1. **HTTP-Based Architecture**: MTEB's default wrapper instantiates vLLM locally, which:
+   - Requires loading model weights on every benchmark run
+   - Assumes GPU availability with `gpu_memory_utilization` and `tensor_parallel_size` parameters
+   - Cannot connect to existing vLLM servers
+
+2. **Remote Endpoint Support**: Our wrapper uses the OpenAI-compatible `/v1/embeddings` API, enabling:
+   - Testing of remote vLLM CPU servers
+   - Testing of remote vLLM GPU servers
+   - Testing of RHAIIS endpoints
+   - Reusing a single vLLM instance across multiple MTEB runs
+
+3. **Enhanced Features**:
+   - Auto-detection of `max_length` from vLLM's `/v1/models` metadata
+   - Automatic truncation via `truncate_prompt_tokens` for long inputs
+   - SSL verification control for development/testing environments
+   - Retry logic and incomplete response validation
+
+**Note**: The "CPU" in the wrapper name is historical - it works with any vLLM endpoint (CPU or GPU) via HTTP.
 
 Features:
 - Batch processing for efficiency

@@ -1,7 +1,52 @@
 """vLLM CPU Wrapper for MTEB.
 
-This wrapper extends MTEB's vLLM support to work with CPU backends,
-specifically targeting vLLM CPU and Red Hat AI Inference Server (RHAIIS).
+This wrapper provides HTTP-based access to vLLM servers for MTEB benchmarks,
+addressing limitations in MTEB's default vLLM wrapper.
+
+Key Differences from MTEB's Default vllm_wrapper.py:
+
+1. **HTTP Endpoint Support** - MTEB's default wrapper only supports
+   local in-process vLLM instantiation via `vllm.LLM()`. This wrapper
+   uses vLLM's OpenAI-compatible HTTP API (`/v1/embeddings`) to connect
+   to running servers.
+
+2. **Remote Server Testing** - Enables testing of:
+   - Remote vLLM CPU servers
+   - Remote vLLM GPU servers
+   - Red Hat AI Inference Server (RHAIIS) endpoints
+   - Any vLLM-compatible embedding endpoint
+
+3. **No GPU Assumptions** - MTEB's default assumes GPU availability
+   with `gpu_memory_utilization=0.9` and `tensor_parallel_size`
+   parameters. This wrapper works with any backend (CPU or GPU) via HTTP.
+
+4. **Reusable Server** - Tests can reuse a running vLLM server instead
+   of loading model weights on every MTEB benchmark run, significantly
+   reducing setup time and memory overhead.
+
+5. **Enhanced Features**:
+   - Auto-detection of max_length from model metadata
+   - Automatic truncation via `truncate_prompt_tokens`
+   - SSL verification control for testing environments
+   - Enhanced retry logic and incomplete response validation
+
+MTEB's Default Behavior:
+    # MTEB's vllm_wrapper.py (local instantiation only)
+    from vllm import LLM
+    llm = LLM(model=model_name, gpu_memory_utilization=0.9)
+    embeddings = llm.encode(texts)
+
+This Wrapper's Approach:
+    # HTTP-based wrapper (remote endpoints)
+    wrapper = VllmCPUEncoderWrapper(
+        endpoint_url="http://vllm-server:8000",
+        model_name="RedHatAI/granite-embedding-english-r2"
+    )
+    # Calls /v1/embeddings HTTP API
+    embeddings = wrapper.encode(dataloader, task_metadata=task)
+
+Note: The "CPU" in the name is historical - this wrapper works with any
+vLLM endpoint (CPU or GPU) via HTTP.
 """
 
 from __future__ import annotations
@@ -300,140 +345,3 @@ class VllmCPUEncoderWrapper(AbsEncoder):
         # Concatenate all batches
         embeddings = np.vstack(all_embeddings)
         return embeddings
-
-
-class VllmCPULocalWrapper(AbsEncoder):
-    """vLLM CPU wrapper using local vLLM instance (no HTTP server).
-
-    This wrapper runs vLLM directly in the same process, suitable for
-    development/testing or when you want to avoid the HTTP overhead.
-
-    Note: This requires vLLM to be installed with CPU support.
-
-    Args:
-        model: Model name or path
-        revision: Model revision
-        trust_remote_code: Whether to trust remote code
-        dtype: Data type for weights (bfloat16, float16, float32)
-        max_model_len: Maximum sequence length
-        prompt_dict: Task-specific prompts
-        use_instructions: Whether to use instruction templates
-        instruction_template: Template for formatting instructions
-        apply_instruction_to_documents: Apply instructions to documents
-    """
-
-    mteb_model_meta = None
-
-    def __init__(
-        self,
-        model: str,
-        revision: str | None = None,
-        *,
-        trust_remote_code: bool = True,
-        dtype: str = "bfloat16",
-        max_model_len: int | None = None,
-        prompt_dict: dict[str, str] | None = None,
-        use_instructions: bool = False,
-        instruction_template: (
-            str | Callable[[str, PromptType | None], str] | None
-        ) = None,
-        apply_instruction_to_documents: bool = True,
-        **kwargs: Any,
-    ):
-        """Initialize local vLLM CPU wrapper."""
-        try:
-            from vllm import LLM
-        except ImportError as e:
-            raise ImportError(
-                "vLLM is required for VllmCPULocalWrapper. "
-                "Please ensure vLLM is installed with CPU support."
-            ) from e
-
-        self.model_name = model
-        self.revision = revision
-        self.prompts_dict = prompt_dict
-        self.use_instructions = use_instructions
-        self.instruction_template = instruction_template
-        self.apply_instruction_to_passages = apply_instruction_to_documents
-
-        if use_instructions and instruction_template is None:
-            raise ValueError(
-                "To use instructions, an instruction_template must be provided."
-            )
-
-        # Initialize vLLM with CPU-specific settings
-        logger.info(f"Initializing vLLM CPU with model: {model}")
-
-        # Force CPU device
-        import os
-        os.environ["VLLM_USE_CPU"] = "1"
-
-        self.llm = LLM(
-            model=model,
-            revision=revision,
-            trust_remote_code=trust_remote_code,
-            dtype=dtype,
-            max_model_len=max_model_len,
-            enforce_eager=True,  # Disable CUDA graphs for CPU
-            **kwargs,
-        )
-
-        logger.info("vLLM CPU initialized successfully")
-
-    def encode(
-        self,
-        inputs: DataLoader[BatchedInput],
-        *,
-        task_metadata: TaskMetadata,
-        hf_split: str,
-        hf_subset: str,
-        prompt_type: PromptType | None = None,
-        **kwargs: Any,
-    ) -> Array:
-        """Encode sentences using local vLLM instance.
-
-        Args:
-            inputs: Sentences to encode
-            task_metadata: Task metadata
-            prompt_type: Query or passage
-            hf_split: Dataset split
-            hf_subset: Dataset subset
-            **kwargs: Additional arguments
-
-        Returns:
-            Embeddings array
-        """
-        import torch
-
-        # Determine prompt
-        prompt = ""
-        if self.use_instructions and self.prompts_dict is not None:
-            prompt = self.get_task_instruction(task_metadata, prompt_type)
-        elif self.prompts_dict is not None:
-            prompt_name = self.get_prompt_name(task_metadata, prompt_type)
-            if prompt_name is not None:
-                prompt = self.prompts_dict.get(prompt_name, "")
-
-        if (
-            self.use_instructions
-            and self.apply_instruction_to_passages is False
-            and prompt_type == PromptType.document
-        ):
-            logger.info(f"No instruction for documents (prompt type = {prompt_type})")
-            prompt = ""
-        else:
-            if prompt:
-                logger.info(
-                    f"Using instruction: '{prompt}' for task: '{task_metadata.name}' "
-                    f"prompt type: '{prompt_type}'"
-                )
-
-        # Collect texts
-        prompts = [prompt + text for batch in inputs for text in batch["text"]]
-
-        # Get embeddings from vLLM
-        # Note: This assumes vLLM has embedding support via encode() method
-        outputs = self.llm.encode(prompts)
-        embeddings = torch.stack([output.outputs.embedding for output in outputs])
-
-        return embeddings.cpu().numpy()
