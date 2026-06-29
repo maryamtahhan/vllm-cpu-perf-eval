@@ -9,6 +9,9 @@ gem 'webrick'
 # Security update for activesupport
 gem 'activesupport', '>= 7.2.3.1'
 
+# Security update for addressable
+gem 'addressable', '>= 2.9.0'
+
 # Security update for concurrent-ruby
 gem 'concurrent-ruby', '>= 1.3.7'
 
