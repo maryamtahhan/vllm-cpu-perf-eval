@@ -12,6 +12,7 @@ from cpueval.paths import get_profiles_dir
 from cpueval.results import (
     run_results_command,
     run_dashboard_command,
+    run_dashboard_stop_command,
     save_last_run_hint,
     find_latest_result,
 )
@@ -380,10 +381,21 @@ def results(
     raise typer.Exit(exit_code)
 
 
-@app.command()
-def dashboard():
-    """Launch the results dashboard."""
+dashboard_app = typer.Typer(help="Manage the results dashboard", no_args_is_help=True)
+app.add_typer(dashboard_app, name="dashboard")
+
+
+@dashboard_app.command("start")
+def dashboard_start():
+    """Start the results dashboard (background, port 8501)."""
     exit_code = run_dashboard_command()
+    raise typer.Exit(exit_code)
+
+
+@dashboard_app.command("stop")
+def dashboard_stop():
+    """Stop the running results dashboard."""
+    exit_code = run_dashboard_stop_command()
     raise typer.Exit(exit_code)
 
 

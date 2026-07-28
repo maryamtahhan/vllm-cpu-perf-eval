@@ -13,6 +13,7 @@ from cpueval.paths import (
     get_llm_results_dir,
     get_audio_results_dir,
     get_dashboard_script,
+    get_dashboard_stop_script,
     get_conversion_script,
     get_repo_root,
     find_latest_result,
@@ -390,3 +391,13 @@ def run_results_command(
 def run_dashboard_command() -> int:
     """Launch the dashboard."""
     return run_results_command(open_dashboard=True)
+
+
+def run_dashboard_stop_command() -> int:
+    """Stop the running dashboard."""
+    console = Console()
+    stop_script = get_dashboard_stop_script()
+    if not stop_script.exists():
+        console.print(f"[red]Stop script not found: {stop_script}[/red]")
+        return 1
+    return subprocess.run([str(stop_script)]).returncode
