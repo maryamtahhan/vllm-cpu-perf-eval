@@ -52,6 +52,18 @@ def get_dashboard_script() -> Path:
     )
 
 
+def get_dashboard_stop_script() -> Path:
+    """Get the dashboard stop script."""
+    return (
+        get_repo_root()
+        / "automation"
+        / "test-execution"
+        / "dashboard-examples"
+        / "vllm_dashboard"
+        / "stop-dashboard.sh"
+    )
+
+
 def get_conversion_script() -> Path:
     """Get the batch conversion script."""
     return (

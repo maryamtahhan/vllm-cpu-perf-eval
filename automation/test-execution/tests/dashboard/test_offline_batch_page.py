@@ -48,7 +48,7 @@ compute_items_per_hour = _ns["compute_items_per_hour"]
 compute_time_for_batch = _ns["compute_time_for_batch"]
 is_technical_use_case = _ns["is_technical_use_case"]
 format_duration = _ns["format_duration"]
-normalize_version = _ns["normalize_version"]
+normalize_version = _ns["normalize_vllm_version"]
 USE_CASE_REFERENCE = _ns["USE_CASE_REFERENCE"]
 
 
@@ -144,13 +144,7 @@ class TestFormatDuration:
 
 
 class TestNormalizeVersion:
-    """Test the normalize_version helper."""
-
-    def test_strip_v_prefix(self):
-        assert normalize_version("v0.25.1") == "0.25.1"
-
-    def test_no_prefix(self):
-        assert normalize_version("0.25.1") == "0.25.1"
+    """Test the normalize_vllm_version helper (aliased as normalize_version)."""
 
     def test_empty_string(self):
         assert normalize_version("") == "unknown"
@@ -158,17 +152,20 @@ class TestNormalizeVersion:
     def test_none(self):
         assert normalize_version(None) == "unknown"
 
-    def test_rhaiis_version(self):
-        assert normalize_version("0.18.0+rhaiv.7") == "0.18.0+rhaiv.7"
+    def test_unknown_string(self):
+        assert normalize_version("unknown") == "unknown"
 
-    def test_v_only(self):
-        assert normalize_version("v") == "v"
+    def test_rhaiis_34_version(self):
+        assert normalize_version("0.18.0+rhaiv.7") == "RHAIIS_3.4"
 
-    def test_double_v_strips_one(self):
-        assert normalize_version("vv1.0") == "v1.0"
+    def test_rhaiis_35_version(self):
+        assert normalize_version("0.24.0+rhaiv.2") == "RHAIIS_3.5"
 
-    def test_uppercase_v(self):
-        assert normalize_version("V0.25.1") == "0.25.1"
+    def test_unmapped_version_passthrough(self):
+        assert normalize_version("0.25.1") == "0.25.1"
+
+    def test_v_prefix_passthrough(self):
+        assert normalize_version("v0.25.1") == "v0.25.1"
 
 
 class TestUseCaseReference:
