@@ -18,7 +18,7 @@ import streamlit as st
 
 # Add parent directory to path for config_manager import
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config_manager import DashboardConfig  # noqa: E402
+from config_manager import DashboardConfig, normalize_vllm_version  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -159,15 +159,6 @@ def is_technical_use_case(use_case_key: str) -> bool:
     belongs to a technical benchmark rather than a product-oriented use case.
     """
     return use_case_key in TECHNICAL_USE_CASES
-
-
-def normalize_version(version: str) -> str:
-    """Strip a single leading 'v'/'V' for consistent version comparison."""
-    if not version:
-        return 'unknown'
-    if version[:1] in ('v', 'V') and len(version) > 1:
-        return version[1:]
-    return version
 
 
 def format_duration(seconds: float) -> str:
@@ -399,7 +390,7 @@ def load_benchmark_results(results_base_dir: str) -> pd.DataFrame:
                             'container_image': metadata['environment'].get(
                                 'container_image', 'unknown'
                             ),
-                            'vllm_version': normalize_version(
+                            'vllm_version': normalize_vllm_version(
                                 metadata['environment'].get(
                                     'vllm_version', 'unknown'
                                 )
