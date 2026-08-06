@@ -323,7 +323,18 @@
         HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
       register: benchmark_output
       changed_when: false
+      ignore_errors: true
       no_log: true
+
+    - name: Display benchmark failure output
+      ansible.builtin.debug:
+        msg: "{{ (['Benchmark FAILED (rc=' + (benchmark_output.rc | string) + '):'] + benchmark_output.stderr_lines[-80:]) }}"
+      when: benchmark_output.rc != 0
+
+    - name: Fail if benchmark failed
+      ansible.builtin.fail:
+        msg: "Benchmark failed with rc={{ benchmark_output.rc }}"
+      when: benchmark_output.rc != 0
 
     - name: Display benchmark output
       ansible.builtin.debug:
