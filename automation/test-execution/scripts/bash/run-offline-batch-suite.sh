@@ -5,7 +5,7 @@
 # Uses Ansible playbook: llm-benchmark-offline-batch.yml
 #
 # Usage:
-#   ./run-offline-batch-suite.sh <mode> [args...]
+#   ./run-offline-batch-suite.sh <mode> [--force] [args...]
 #
 # Modes:
 #   use-cases [runs]                 - Run all 11 real-world use cases (default: 5 runs each)
@@ -98,7 +98,11 @@ usage() {
 vLLM Offline Batch Benchmark Suite
 
 USAGE:
-  ./run-offline-batch-suite.sh <mode> [args...]
+  ./run-offline-batch-suite.sh <mode> [--force] [args...]
+
+FLAGS:
+  --force    Bypass resume/skip logic and run the full requested iteration count
+             even when results already exist. Also settable via OFFLINE_BATCH_FORCE=1.
 
 MODES:
 
@@ -119,6 +123,9 @@ MODES:
       Models: Single model or comma-separated list. Use 'all' for the 3 production RedHatAI models
                (w8a8, w4a16 Llama, Qwen3 w4a16). TinyLlama is smoke-test only — pass explicitly.
 
+      Resume: Skips configs that already have the requested number of completed results.
+              Partial configs resume from where they left off. Use --force to override.
+
     use-case-sweep <use-case> [models] [cores] [runs]
       Run a specific use case with core sweep
       Use cases: summarization, classification, translation, entity-extraction,
@@ -127,6 +134,9 @@ MODES:
       Models: 'all' or comma-separated list (default: all)
       Cores: comma-separated list (default: 8,16,24,32)
       Runs: number of iterations (default: 3)
+
+      Resume: Skips model+use-case+cores+dataset+num_prompts configs that already have
+              the requested number of results. Use --force to override.
 
   Technical Benchmarks (Performance analysis):
     baseline [cores] [prompts]       Baseline throughput across all 4 RedHatAI models (includes TinyLlama)
@@ -146,6 +156,7 @@ EXAMPLES:
   ./run-offline-batch-suite.sh use-cases 3 "$MODEL_TINY_PRUNED"  # 3 runs, TinyLlama smoke only
   ./run-offline-batch-suite.sh use-cases 5 all                # 5 runs, 3 production RedHatAI models
   ./run-offline-batch-suite.sh use-cases 1 "$MODEL_LLAMA_W8A8,$MODEL_QWEN_W4A16"  # Specific models
+  ./run-offline-batch-suite.sh use-cases 3 all --force        # Force re-run all, ignore existing
 
   # Focused use case testing
   ./run-offline-batch-suite.sh use-case-sweep summarization all 8,16,24,32 3
@@ -154,6 +165,7 @@ EXAMPLES:
   ./run-offline-batch-suite.sh use-case-sweep long-summarization all 16,32 3
   ./run-offline-batch-suite.sh use-case-sweep rag all
   ./run-offline-batch-suite.sh use-case-sweep short-labeling all 8,16,24,32
+  ./run-offline-batch-suite.sh use-case-sweep summarization all 8,16 3 --force
 
   # Technical benchmarks
   ./run-offline-batch-suite.sh baseline 32 100
@@ -161,9 +173,10 @@ EXAMPLES:
   ./run-offline-batch-suite.sh all meta-llama/Llama-3.2-1B-Instruct 32
 
 ENVIRONMENT VARIABLES:
-  VLLM_CONTAINER_IMAGE    Override vLLM container image
-                          Default: docker.io/vllm/vllm-openai-cpu:v0.25.1
-                          RHAIIS: export VLLM_CONTAINER_IMAGE=registry.redhat.io/rhaii/vllm-cpu-rhel9:3.4.0
+  VLLM_CONTAINER_IMAGE      Override vLLM container image
+                            Default: docker.io/vllm/vllm-openai-cpu:v0.25.1
+                            RHAIIS: export VLLM_CONTAINER_IMAGE=registry.redhat.io/rhaii/vllm-cpu-rhel9:3.4.0
+  OFFLINE_BATCH_FORCE=1     Same as --force; bypass skip/resume for all configs
 
 REDHATAI MODELS (Intel Xeon Compatible):
   RedHatAI/TinyLlama-1.1B-Chat-v1.0-pruned2.4
@@ -191,11 +204,14 @@ calculate_timeout() {
     echo $timeout
 }
 
-# Count completed results for a model/use_case/cores combination
+# Count completed results for a model/use_case/cores/dataset/num_prompts combination.
+# Only existing results.json files count; failed or partial runs are excluded.
 count_existing_results() {
     local model="$1"
     local ansible_use_case="$2"
     local cores="$3"
+    local dataset="$4"
+    local num_prompts="$5"
     local sanitized_model="${model//\//__}"
     local results_base="${REPO_ROOT}/results/llm/${sanitized_model}"
 
@@ -205,12 +221,52 @@ count_existing_results() {
     fi
 
     local file_list
-    file_list=$(find "$results_base" -path "*/${cores}cores-*" -name "results.json" 2>/dev/null)
+    file_list=$(find "$results_base" \
+        -path "*/${cores}cores-${dataset}-${num_prompts}prompts/results.json" 2>/dev/null)
     if [[ -z "$file_list" ]]; then
         echo 0
         return
     fi
     echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Run a single config with skip/resume logic.
+# Skips if existing results >= runs (unless OFFLINE_BATCH_FORCE=1).
+# Resumes partial runs, preserving correct run_display numbering.
+# Returns 0 if all runs succeeded or were skipped, 1 if any run failed.
+# Args: model ansible_use_case dataset num_prompts cores runs [extra_args...]
+run_with_resume() {
+    local model="$1" ansible_use_case="$2" dataset="$3" num_prompts="$4"
+    local cores="$5" runs="$6"
+    shift 6
+
+    local existing_runs=0 remaining=$runs
+
+    if [[ "${OFFLINE_BATCH_FORCE:-0}" != "1" ]]; then
+        existing_runs=$(count_existing_results "$model" "$ansible_use_case" "$cores" "$dataset" "$num_prompts")
+        remaining=$((runs - existing_runs))
+        if [[ $remaining -le 0 ]]; then
+            echo "  Cores: $cores - SKIP ($existing_runs/$runs runs already complete)"
+            return 0
+        fi
+        if [[ $existing_runs -gt 0 ]]; then
+            echo "  Cores: $cores ($existing_runs/$runs done, running $remaining more)"
+        else
+            echo "  Cores: $cores"
+        fi
+    else
+        echo "  Cores: $cores (force: running all $runs)"
+    fi
+
+    local run_failed=0
+    for run in $(seq 1 $remaining); do
+        local run_display=$((existing_runs + run))
+        echo "    Run $run_display/$runs..."
+        if ! run_test "$model" "$dataset" "$num_prompts" "$cores" "$@"; then
+            run_failed=1
+        fi
+    done
+    return $run_failed
 }
 
 # Run Ansible playbook with timeout and retry
@@ -370,6 +426,11 @@ use_cases_suite() {
     for model in "${MODELS[@]}"; do
         echo -e "  - $model"
     done
+    if [[ "${OFFLINE_BATCH_FORCE:-0}" == "1" ]]; then
+        echo -e "  Resume: disabled (--force)"
+    else
+        echo -e "  Resume: enabled (skip completed configs, resume partial)"
+    fi
     echo -e "${BLUE}========================================${NC}"
     echo
 
@@ -382,12 +443,10 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "sharegpt" 1000 16 -e "use_case=summarization"; then
-                failed_tests+=("Document Processing - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "summarization" "sharegpt" 1000 16 "$runs" \
+                -e "use_case=summarization"; then
+            failed_tests+=("Document Processing - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -399,12 +458,10 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "sharegpt" 1000 16 -e "output_len=64" -e "use_case=classification"; then
-                failed_tests+=("Classification - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "classification" "sharegpt" 1000 16 "$runs" \
+                -e "output_len=64" -e "use_case=classification"; then
+            failed_tests+=("Classification - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -416,12 +473,10 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "sharegpt" 500 16 -e "output_len=1024" -e "use_case=translation"; then
-                failed_tests+=("Translation - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "translation" "sharegpt" 500 16 "$runs" \
+                -e "output_len=1024" -e "use_case=translation"; then
+            failed_tests+=("Translation - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -433,12 +488,10 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "sharegpt" 1000 16 -e "output_len=128" -e "use_case=entity_extraction"; then
-                failed_tests+=("Entity Extraction - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "entity_extraction" "sharegpt" 1000 16 "$runs" \
+                -e "output_len=128" -e "use_case=entity_extraction"; then
+            failed_tests+=("Entity Extraction - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -446,16 +499,14 @@ use_cases_suite() {
     # 5. DATASET GENERATION
     echo -e "${GREEN}🎲 [5/11] Dataset Generation${NC}"
     echo "Use case: Generate 100k synthetic training examples"
-    echo "Parameters: 5000 prompts, 256→256 tokens, 32 cores"
+    echo "Parameters: 5000 prompts, 256->256 tokens, 32 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "random" 5000 32 -e "input_len=256" -e "output_len=256" -e "use_case=dataset_generation"; then
-                failed_tests+=("Dataset Generation - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "dataset_generation" "random" 5000 32 "$runs" \
+                -e "input_len=256" -e "output_len=256" -e "use_case=dataset_generation"; then
+            failed_tests+=("Dataset Generation - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -468,13 +519,10 @@ use_cases_suite() {
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
         for cores in 8 16 24 32; do
-            echo "    Testing with $cores cores..."
-            for run in $(seq 1 $runs); do
-                echo "      Run $run/$runs..."
-                if ! run_test "$model" "sonnet" 500 $cores -e "use_case=etl"; then
-                    failed_tests+=("ETL ($cores cores) - $model - Run $run")
-                fi
-            done
+            if ! run_with_resume "$model" "etl" "sonnet" 500 "$cores" "$runs" \
+                    -e "use_case=etl"; then
+                failed_tests+=("ETL ($cores cores) - $model")
+            fi
         done
     done
     echo -e "${GREEN}✓ Complete${NC}"
@@ -483,16 +531,14 @@ use_cases_suite() {
     # 7. CODE GENERATION
     echo -e "${GREEN}💻 [7/11] Code Generation${NC}"
     echo "Use case: Generate tests for 1,000 functions"
-    echo "Parameters: 500 prompts, 512→512 tokens, 16 cores"
+    echo "Parameters: 500 prompts, 512->512 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "random" 500 16 -e "input_len=512" -e "output_len=512" -e "use_case=code_generation"; then
-                failed_tests+=("Code Generation - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "code_generation" "random" 500 16 "$runs" \
+                -e "input_len=512" -e "output_len=512" -e "use_case=code_generation"; then
+            failed_tests+=("Code Generation - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -500,16 +546,14 @@ use_cases_suite() {
     # 8. LONG-DOCUMENT SUMMARIZATION
     echo -e "${GREEN}📜 [8/11] Long-Document Summarization${NC}"
     echo "Use case: Summarize long documents (reports, articles, legal docs)"
-    echo "Parameters: 500 prompts, random 4096→256 tokens, 16 cores"
+    echo "Parameters: 500 prompts, random 4096->256 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "random" 500 16 -e "input_len=4096" -e "output_len=256" -e "use_case=long_summarization"; then
-                failed_tests+=("Long-Document Summarization - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "long_summarization" "random" 500 16 "$runs" \
+                -e "input_len=4096" -e "output_len=256" -e "use_case=long_summarization"; then
+            failed_tests+=("Long-Document Summarization - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -517,33 +561,29 @@ use_cases_suite() {
     # 9. BATCH RAG / GROUNDED Q&A
     echo -e "${GREEN}🔍 [9/11] Batch RAG / Grounded Q&A${NC}"
     echo "Use case: Process RAG queries with retrieved context + short answers"
-    echo "Parameters: 500 prompts, random 2048→128 tokens, 16 cores"
+    echo "Parameters: 500 prompts, random 2048->128 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "random" 500 16 -e "input_len=2048" -e "output_len=128" -e "use_case=rag_batch"; then
-                failed_tests+=("RAG Batch - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "rag_batch" "random" 500 16 "$runs" \
+                -e "input_len=2048" -e "output_len=128" -e "use_case=rag_batch"; then
+            failed_tests+=("RAG Batch - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
 
     # 10. SHARED-PREFIX / TEMPLATE BATCH
     echo -e "${GREEN}📋 [10/11] Shared-Prefix / Template Batch${NC}"
-    echo "Use case: Short-output template-shaped throughput (1024→64 tokens)"
-    echo "Parameters: 1000 prompts, random 1024→64 tokens, 16 cores"
+    echo "Use case: Short-output template-shaped throughput (1024->64 tokens)"
+    echo "Parameters: 1000 prompts, random 1024->64 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "random" 1000 16 -e "input_len=1024" -e "output_len=64" -e "use_case=shared_prefix"; then
-                failed_tests+=("Shared-Prefix - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "shared_prefix" "random" 1000 16 "$runs" \
+                -e "input_len=1024" -e "output_len=64" -e "use_case=shared_prefix"; then
+            failed_tests+=("Shared-Prefix - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -555,12 +595,10 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        for run in $(seq 1 $runs); do
-            echo "    Run $run/$runs..."
-            if ! run_test "$model" "sharegpt" 2000 16 -e "output_len=16" -e "use_case=short_labeling"; then
-                failed_tests+=("Ultra-Short Labeling - $model - Run $run")
-            fi
-        done
+        if ! run_with_resume "$model" "short_labeling" "sharegpt" 2000 16 "$runs" \
+                -e "output_len=16" -e "use_case=short_labeling"; then
+            failed_tests+=("Ultra-Short Labeling - $model")
+        fi
     done
     echo -e "${GREEN}✓ Complete${NC}"
     echo
@@ -632,7 +670,7 @@ test_batch_scaling() {
     echo -e "${GREEN}Test: Batch Size Scaling${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo "Model: $model"
-    echo "Dataset: random (512 → 256 tokens)"
+    echo "Dataset: random (512 -> 256 tokens)"
     echo "Cores: $cores"
     echo "Batch sizes: ${sizes[*]}"
     echo -e "${GREEN}========================================${NC}"
@@ -791,7 +829,7 @@ test_kv_capacity() {
     echo -e "${GREEN}Test: KV-Cache Capacity Sweep${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo "Model: $model"
-    echo "Dataset: random (512 → 256 tokens)"
+    echo "Dataset: random (512 -> 256 tokens)"
     echo "Cores: $cores"
     echo "Batch sizes: ${sizes[*]}"
     echo "Question: How large a batch fits before KV cache saturates?"
@@ -870,18 +908,24 @@ use_case_sweep() {
     done
     echo -e "Core counts: ${CORES[*]}"
     echo -e "Runs per config: $runs"
+    if [[ "${OFFLINE_BATCH_FORCE:-0}" == "1" ]]; then
+        echo -e "Resume: disabled (--force)"
+    else
+        echo -e "Resume: enabled (skip completed configs, resume partial)"
+    fi
     echo -e "${BLUE}========================================${NC}"
     echo
 
     local failed_tests=()
 
-    # Define use case parameters
-    local dataset num_prompts extra_args use_case_name
+    # Define use case parameters; ansible_use_case is the value written to results.json
+    local dataset num_prompts extra_args ansible_use_case use_case_name
     case "$use_case" in
         summarization|summary|sum)
             use_case_name="📝 Summarization"
             dataset="sharegpt"
             num_prompts=1000
+            ansible_use_case="summarization"
             extra_args="-e use_case=summarization"
             echo "Use case: Summarize 10,000 support tickets overnight"
             echo "Dataset: sharegpt (conversations)"
@@ -890,6 +934,7 @@ use_case_sweep() {
             use_case_name="🏷️ Classification/Tagging"
             dataset="sharegpt"
             num_prompts=1000
+            ansible_use_case="classification"
             extra_args="-e output_len=64 -e use_case=classification"
             echo "Use case: Classify 50,000 articles for tagging"
             echo "Dataset: sharegpt (real conversations)"
@@ -898,6 +943,7 @@ use_case_sweep() {
             use_case_name="🌐 Translation"
             dataset="sharegpt"
             num_prompts=500
+            ansible_use_case="translation"
             extra_args="-e output_len=1024 -e use_case=translation"
             echo "Use case: Translate documentation corpus"
             echo "Dataset: sharegpt (real text)"
@@ -906,6 +952,7 @@ use_case_sweep() {
             use_case_name="🧬 Entity Extraction"
             dataset="sharegpt"
             num_prompts=1000
+            ansible_use_case="entity_extraction"
             extra_args="-e output_len=128 -e use_case=entity_extraction"
             echo "Use case: Extract entities from document batches"
             echo "Dataset: sharegpt (conversations with real entities)"
@@ -914,6 +961,7 @@ use_case_sweep() {
             use_case_name="🎲 Dataset Generation"
             dataset="random"
             num_prompts=5000
+            ansible_use_case="dataset_generation"
             extra_args="-e input_len=256 -e output_len=256 -e use_case=dataset_generation"
             echo "Use case: Generate 100k synthetic training examples"
             echo "Dataset: random (synthetic data)"
@@ -922,6 +970,7 @@ use_case_sweep() {
             use_case_name="💻 Code Generation"
             dataset="random"
             num_prompts=500
+            ansible_use_case="code_generation"
             extra_args="-e input_len=512 -e output_len=512 -e use_case=code_generation"
             echo "Use case: Generate tests for 1,000 functions"
             echo "Dataset: random (no code-specific dataset available)"
@@ -930,6 +979,7 @@ use_case_sweep() {
             use_case_name="🔄 ETL Pipelines"
             dataset="sonnet"
             num_prompts=500
+            ansible_use_case="etl"
             extra_args="-e use_case=etl"
             echo "Use case: Batch inference in data workflows"
             echo "Dataset: sonnet (baseline)"
@@ -938,6 +988,7 @@ use_case_sweep() {
             use_case_name="📜 Long-Document Summarization"
             dataset="random"
             num_prompts=500
+            ansible_use_case="long_summarization"
             extra_args="-e input_len=4096 -e output_len=256 -e use_case=long_summarization"
             echo "Use case: Summarize long documents (reports, articles, legal)"
             echo "Dataset: random (controlled long input)"
@@ -946,6 +997,7 @@ use_case_sweep() {
             use_case_name="🔍 Batch RAG / Grounded Q&A"
             dataset="random"
             num_prompts=500
+            ansible_use_case="rag_batch"
             extra_args="-e input_len=2048 -e output_len=128 -e use_case=rag_batch"
             echo "Use case: RAG queries with retrieved context + short answers"
             echo "Dataset: random (simulating retrieved chunks)"
@@ -954,14 +1006,16 @@ use_case_sweep() {
             use_case_name="📋 Shared-Prefix / Template Batch"
             dataset="random"
             num_prompts=1000
+            ansible_use_case="shared_prefix"
             extra_args="-e input_len=1024 -e output_len=64 -e use_case=shared_prefix"
-            echo "Use case: Short-output template-shaped throughput (1024→64 tokens)"
+            echo "Use case: Short-output template-shaped throughput (1024->64 tokens)"
             echo "Dataset: random (controlled I/O shape)"
             ;;
         short-labeling|short-label|labeling|sentiment)
             use_case_name="⚡ Ultra-Short Labeling"
             dataset="sharegpt"
             num_prompts=2000
+            ansible_use_case="short_labeling"
             extra_args="-e output_len=16 -e use_case=short_labeling"
             echo "Use case: Sentiment/moderation/yes-no labeling at high volume"
             echo "Dataset: sharegpt (real text, ultra-short output)"
@@ -977,33 +1031,14 @@ use_case_sweep() {
     echo "Parameters: $num_prompts prompts"
     echo
 
-    # Extract the ansible use_case value from extra_args for result counting
-    local ansible_use_case
-    ansible_use_case=$(echo "$extra_args" | grep -o 'use_case=[^ ]*' | cut -d= -f2)
-
     # Run tests for each model and core count
     for model in "${MODELS[@]}"; do
         echo -e "${GREEN}Model: $model${NC}"
         for cores in "${CORES[@]}"; do
-            local existing_runs
-            existing_runs=$(count_existing_results "$model" "$ansible_use_case" "$cores")
-            local remaining=$((runs - existing_runs))
-            if [[ $remaining -le 0 ]]; then
-                echo "  Cores: $cores — SKIP ($existing_runs/$runs runs already complete)"
-                continue
+            if ! run_with_resume "$model" "$ansible_use_case" "$dataset" "$num_prompts" \
+                    "$cores" "$runs" $extra_args; then
+                failed_tests+=("$use_case_name - $model - $cores cores")
             fi
-            if [[ $existing_runs -gt 0 ]]; then
-                echo "  Cores: $cores ($existing_runs/$runs done, running $remaining more)"
-            else
-                echo "  Cores: $cores"
-            fi
-            for run in $(seq 1 $remaining); do
-                local run_display=$((existing_runs + run))
-                echo "    Run $run_display/$runs..."
-                if ! run_test "$model" "$dataset" "$num_prompts" "$cores" $extra_args; then
-                    failed_tests+=("$use_case_name - $model - $cores cores - Run $run_display")
-                fi
-            done
         done
         echo
     done
@@ -1094,6 +1129,23 @@ test_all() {
 # ==============================================================================
 
 main() {
+    if [ $# -lt 1 ]; then
+        usage
+    fi
+
+    # Parse --force flag from any position in the argument list
+    OFFLINE_BATCH_FORCE="${OFFLINE_BATCH_FORCE:-0}"
+    local -a filtered_args=()
+    for arg in "$@"; do
+        if [[ "$arg" == "--force" ]]; then
+            OFFLINE_BATCH_FORCE=1
+        else
+            filtered_args+=("$arg")
+        fi
+    done
+    export OFFLINE_BATCH_FORCE
+    set -- "${filtered_args[@]}"
+
     if [ $# -lt 1 ]; then
         usage
     fi
