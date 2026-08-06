@@ -376,6 +376,23 @@ test_resume_failure_propagation() {
     run_test() { return 0; }
 }
 
+# ── cap_prompts tests ─────────────────────────────────────────────────────────
+# cap_prompts is sourced from offline-batch-helpers.sh via HELPERS_LIB above.
+
+# Test 19: cap active — input above cap returns the cap value
+test_cap_prompts_capped() {
+    local result
+    result=$(OFFLINE_BATCH_MAX_PROMPTS=100 cap_prompts 1000)
+    assert_equals "100" "$result" "cap_prompts: 1000 capped to 100 when MAX_PROMPTS=100"
+}
+
+# Test 20: cap disabled — OFFLINE_BATCH_MAX_PROMPTS=0 returns the original value
+test_cap_prompts_disabled() {
+    local result
+    result=$(OFFLINE_BATCH_MAX_PROMPTS=0 cap_prompts 1000)
+    assert_equals "1000" "$result" "cap_prompts: 1000 unchanged when MAX_PROMPTS=0 (cap disabled)"
+}
+
 # Main test execution
 echo "=========================================="
 echo "run-offline-batch-suite.sh Unit Tests"
@@ -400,6 +417,8 @@ test_resume_full_skip
 test_resume_partial
 test_resume_force_bypass
 test_resume_failure_propagation
+test_cap_prompts_capped
+test_cap_prompts_disabled
 
 echo
 echo "=========================================="

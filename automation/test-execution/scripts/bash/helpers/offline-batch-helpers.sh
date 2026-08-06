@@ -38,6 +38,16 @@ count_existing_results() {
     echo "${count:-0}"
 }
 
+# cap_prompts N — return N capped at OFFLINE_BATCH_MAX_PROMPTS (0 or unset = no cap)
+cap_prompts() {
+    local n=$1
+    if [[ "${OFFLINE_BATCH_MAX_PROMPTS:-0}" -gt 0 && "$n" -gt "$OFFLINE_BATCH_MAX_PROMPTS" ]]; then
+        echo "$OFFLINE_BATCH_MAX_PROMPTS"
+    else
+        echo "$n"
+    fi
+}
+
 # Run a single config with skip/resume logic.
 # Skips if existing results >= runs (unless OFFLINE_BATCH_FORCE=1).
 # Resumes partial runs, preserving correct run_display numbering.

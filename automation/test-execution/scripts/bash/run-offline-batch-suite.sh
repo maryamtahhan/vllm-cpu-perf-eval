@@ -84,16 +84,6 @@ RETRY_DELAY=30  # Seconds to wait between retries
 # Set OFFLINE_BATCH_MAX_PROMPTS=0 or unset to use each use case's natural count.
 OFFLINE_BATCH_MAX_PROMPTS="${OFFLINE_BATCH_MAX_PROMPTS:-100}"
 
-# cap_prompts N — return N capped at OFFLINE_BATCH_MAX_PROMPTS (0 = no cap)
-cap_prompts() {
-    local n=$1
-    if [[ "${OFFLINE_BATCH_MAX_PROMPTS:-0}" -gt 0 && "$n" -gt "$OFFLINE_BATCH_MAX_PROMPTS" ]]; then
-        echo "$OFFLINE_BATCH_MAX_PROMPTS"
-    else
-        echo "$n"
-    fi
-}
-
 # Detect timeout command (GNU timeout on Linux, gtimeout from coreutils on macOS)
 TIMEOUT_CMD=""
 if command -v timeout &> /dev/null; then
@@ -135,6 +125,8 @@ MODES:
 
       Resume: Skips configs that already have the requested number of completed results.
               Partial configs resume from where they left off. Use --force to override.
+              Note: resume is keyed on the effective (capped) prompt count; results from
+              runs with a different cap (or no cap) will not be detected as completed.
 
     use-case-sweep <use-case> [models] [cores] [runs]
       Run a specific use case with core sweep
@@ -147,6 +139,8 @@ MODES:
 
       Resume: Skips model+use-case+cores+dataset+num_prompts configs that already have
               the requested number of results. Use --force to override.
+              Note: resume is keyed on the effective (capped) prompt count; results from
+              runs with a different cap (or no cap) will not be detected as completed.
 
   Technical Benchmarks (Performance analysis):
     baseline [cores] [prompts]       Baseline throughput across all 4 RedHatAI models (includes TinyLlama)
@@ -183,10 +177,14 @@ EXAMPLES:
   ./run-offline-batch-suite.sh all meta-llama/Llama-3.2-1B-Instruct 32
 
 ENVIRONMENT VARIABLES:
-  VLLM_CONTAINER_IMAGE      Override vLLM container image
-                            Default: docker.io/vllm/vllm-openai-cpu:v0.25.1
-                            RHAIIS: export VLLM_CONTAINER_IMAGE=registry.redhat.io/rhaii/vllm-cpu-rhel9:3.4.0
-  OFFLINE_BATCH_FORCE=1     Same as --force; bypass skip/resume for all configs
+  VLLM_CONTAINER_IMAGE         Override vLLM container image
+                               Default: docker.io/vllm/vllm-openai-cpu:v0.25.1
+                               RHAIIS: export VLLM_CONTAINER_IMAGE=registry.redhat.io/rhaii/vllm-cpu-rhel9:3.4.0
+  OFFLINE_BATCH_FORCE=1        Same as --force; bypass skip/resume for all configs
+  OFFLINE_BATCH_MAX_PROMPTS=N  Cap prompt count per benchmark run (default: 100).
+                               Set to 0 to use each use case's full natural prompt count.
+                               Resume keys include the capped count, so prior results
+                               from runs with a different cap are not reused.
 
 REDHATAI MODELS (Intel Xeon Compatible):
   RedHatAI/TinyLlama-1.1B-Chat-v1.0-pruned2.4
@@ -384,7 +382,7 @@ use_cases_suite() {
     # 1. BULK DOCUMENT PROCESSING
     echo -e "${GREEN}📄 [1/11] Bulk Document Processing (Summarization)${NC}"
     echo "Use case: Summarize 10,000 support tickets overnight"
-    echo "Parameters: 1000 prompts, sharegpt dataset (conversations), 16 cores"
+    echo "Parameters: $(cap_prompts 1000) prompts, sharegpt dataset (conversations), 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -399,7 +397,7 @@ use_cases_suite() {
     # 2. CLASSIFICATION / TAGGING
     echo -e "${GREEN}🏷️ [2/11] Classification/Tagging${NC}"
     echo "Use case: Classify 50,000 articles for tagging"
-    echo "Parameters: 1000 prompts, sharegpt dataset (real conversations), 16 cores, output=64 tokens"
+    echo "Parameters: $(cap_prompts 1000) prompts, sharegpt dataset (real conversations), 16 cores, output=64 tokens"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -414,7 +412,7 @@ use_cases_suite() {
     # 3. TRANSLATION
     echo -e "${GREEN}🌐 [3/11] Translation${NC}"
     echo "Use case: Translate documentation corpus"
-    echo "Parameters: 500 prompts, sharegpt dataset (real text), output=1024 tokens"
+    echo "Parameters: $(cap_prompts 500) prompts, sharegpt dataset (real text), output=1024 tokens"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -429,7 +427,7 @@ use_cases_suite() {
     # 4. ENTITY EXTRACTION
     echo -e "${GREEN}🧬 [4/11] Entity Extraction${NC}"
     echo "Use case: Extract entities from document batches"
-    echo "Parameters: 1000 prompts, sharegpt dataset (conversations with real entities), output=128 tokens"
+    echo "Parameters: $(cap_prompts 1000) prompts, sharegpt dataset (conversations with real entities), output=128 tokens"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -444,7 +442,7 @@ use_cases_suite() {
     # 5. DATASET GENERATION
     echo -e "${GREEN}🎲 [5/11] Dataset Generation${NC}"
     echo "Use case: Generate 100k synthetic training examples"
-    echo "Parameters: 5000 prompts, 256->256 tokens, 32 cores"
+    echo "Parameters: $(cap_prompts 5000) prompts, 256->256 tokens, 32 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -459,7 +457,7 @@ use_cases_suite() {
     # 6. ETL PIPELINES (Core Scaling)
     echo -e "${GREEN}🔄 [6/11] ETL Pipelines (Core Scaling)${NC}"
     echo "Use case: Batch inference in data workflows"
-    echo "Parameters: 500 prompts, sonnet, 8/16/24/32 cores"
+    echo "Parameters: $(cap_prompts 500) prompts, sonnet, 8/16/24/32 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -476,7 +474,7 @@ use_cases_suite() {
     # 7. CODE GENERATION
     echo -e "${GREEN}💻 [7/11] Code Generation${NC}"
     echo "Use case: Generate tests for 1,000 functions"
-    echo "Parameters: 500 prompts, 512->512 tokens, 16 cores"
+    echo "Parameters: $(cap_prompts 500) prompts, 512->512 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -491,7 +489,7 @@ use_cases_suite() {
     # 8. LONG-DOCUMENT SUMMARIZATION
     echo -e "${GREEN}📜 [8/11] Long-Document Summarization${NC}"
     echo "Use case: Summarize long documents (reports, articles, legal docs)"
-    echo "Parameters: 500 prompts, random 4096->256 tokens, 16 cores"
+    echo "Parameters: $(cap_prompts 500) prompts, random 4096->256 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -506,7 +504,7 @@ use_cases_suite() {
     # 9. BATCH RAG / GROUNDED Q&A
     echo -e "${GREEN}🔍 [9/11] Batch RAG / Grounded Q&A${NC}"
     echo "Use case: Process RAG queries with retrieved context + short answers"
-    echo "Parameters: 500 prompts, random 2048->128 tokens, 16 cores"
+    echo "Parameters: $(cap_prompts 500) prompts, random 2048->128 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -521,7 +519,7 @@ use_cases_suite() {
     # 10. SHARED-PREFIX / TEMPLATE BATCH
     echo -e "${GREEN}📋 [10/11] Shared-Prefix / Template Batch${NC}"
     echo "Use case: Short-output template-shaped throughput (1024->64 tokens)"
-    echo "Parameters: 1000 prompts, random 1024->64 tokens, 16 cores"
+    echo "Parameters: $(cap_prompts 1000) prompts, random 1024->64 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
@@ -536,7 +534,7 @@ use_cases_suite() {
     # 11. ULTRA-SHORT LABELING
     echo -e "${GREEN}⚡ [11/11] Ultra-Short Labeling${NC}"
     echo "Use case: Sentiment/moderation/yes-no labeling at high volume"
-    echo "Parameters: 2000 prompts, sharegpt, output=16 tokens, 16 cores"
+    echo "Parameters: $(cap_prompts 2000) prompts, sharegpt, output=16 tokens, 16 cores"
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
