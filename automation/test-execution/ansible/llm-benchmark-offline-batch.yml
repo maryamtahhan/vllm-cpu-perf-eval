@@ -104,13 +104,16 @@
         mode: "0755"
 
     - name: Check if model is already cached
-      ansible.builtin.stat:
-        path: "{{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}/snapshots"
+      ansible.builtin.shell: |
+        find {{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}/snapshots \
+          -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -q .
       register: model_cache_check
+      failed_when: false
+      changed_when: false
 
     - name: Display cache status
       ansible.builtin.debug:
-        msg: "Model {{ test_model }} {{ 'found in cache' if model_cache_check.stat.exists else 'not found, will download using container' }}"
+        msg: "Model {{ test_model }} {{ 'found in cache (complete snapshot)' if model_cache_check.rc == 0 else 'not found or incomplete, will download using container' }}"
 
     - name: Download model using container
       ansible.builtin.shell: |
@@ -124,7 +127,7 @@
           -c "from huggingface_hub import snapshot_download; snapshot_download('{{ test_model }}', cache_dir='/root/.cache/huggingface')"
       environment:
         HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
-      when: not model_cache_check.stat.exists
+      when: model_cache_check.rc != 0
       register: model_download
       changed_when: model_download.rc == 0
       no_log: true

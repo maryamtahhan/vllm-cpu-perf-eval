@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
 # Shared helpers: count_existing_results, run_with_resume, color vars
-source "${SCRIPT_DIR}/lib/offline-batch-helpers.sh"
+source "${SCRIPT_DIR}/helpers/offline-batch-helpers.sh"
 
 # Ensure we're in the repo root
 cd "${REPO_ROOT}"

@@ -4,17 +4,21 @@
 # Tests bash script functionality:
 # - Model list parsing ("all", comma-separated, single)
 # - Parameter validation
-# - Command construction
+# - count_existing_results: path/use-case/dataset/prompt isolation
+# - run_with_resume: skip, partial resume, --force bypass, failure propagation
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUITE_SCRIPT="$SCRIPT_DIR/../../scripts/bash/run-offline-batch-suite.sh"
+HELPERS_LIB="$SCRIPT_DIR/../../scripts/bash/helpers/offline-batch-helpers.sh"
 
-# Colors for test output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m'
+# Source shared helpers so count_existing_results and run_with_resume are available
+# directly — no duplication of the function logic in this file.
+source "$HELPERS_LIB"
+
+# Colors for test output (already defined by helpers lib, kept here for clarity)
+# GREEN / RED / NC come from HELPERS_LIB
 
 # Test counters
 TESTS_RUN=0
@@ -58,10 +62,26 @@ assert_contains() {
     fi
 }
 
-# Source the script functions (without executing main)
+assert_not_contains() {
+    local haystack="$1"
+    local needle="$2"
+    local test_name="$3"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [[ "$haystack" != *"$needle"* ]]; then
+        echo -e "${GREEN}✓${NC} $test_name"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "${RED}✗${NC} $test_name"
+        echo "  Expected NOT to contain: $needle"
+        echo "  Actual: $haystack"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+}
+
+# Source the script variables (without executing main)
 source_script_functions() {
-    # Extract just the function definitions, not the main execution
-    # This is a bit hacky but works for testing
     export MODEL_TINY_PRUNED="RedHatAI/TinyLlama-1.1B-Chat-v1.0-pruned2.4"
     export MODEL_LLAMA_W8A8="RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8"
     export MODEL_LLAMA_W4A16="RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16"
@@ -69,6 +89,20 @@ source_script_functions() {
     export ALL_MODELS="$MODEL_LLAMA_W8A8,$MODEL_LLAMA_W4A16,$MODEL_QWEN_W4A16"
     export VLLM_CONTAINER_IMAGE="vllm/vllm-openai:latest"
 }
+
+# Write a minimal results.json matching the real schema into the given directory.
+# use_case lives under dataset_config, matching the grep pattern in count_existing_results.
+_make_result() {
+    local dir="$1" use_case="$2"
+    mkdir -p "$dir"
+    printf '{"test_type": "offline-batch", "dataset_config": {"use_case": "%s"}}\n' \
+        "$use_case" > "$dir/results.json"
+}
+
+# Default no-op run_test stub — overridden per test as needed.
+run_test() { return 0; }
+
+# ── Script smoke tests ────────────────────────────────────────────────────────
 
 # Test 1: Check if script exists
 test_script_exists() {
@@ -163,30 +197,8 @@ test_all_keyword_expansion() {
 }
 
 # ── count_existing_results fixture tests ─────────────────────────────────────
-# This function mirrors count_existing_results() in run-offline-batch-suite.sh.
-# If the find/grep logic changes in the script, update this definition too.
-_count_existing_results() {
-    local model="$1" ansible_use_case="$2" cores="$3" dataset="$4" num_prompts="$5"
-    local sanitized_model="${model//\//__}"
-    local results_base="${REPO_ROOT}/results/llm/${sanitized_model}"
-    [[ ! -d "$results_base" ]] && { echo 0; return; }
-    local file_list
-    file_list=$(find "$results_base" \
-        -path "*/${cores}cores-${dataset}-${num_prompts}prompts/results.json" 2>/dev/null)
-    [[ -z "$file_list" ]] && { echo 0; return; }
-    local count
-    count=$(echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' ') || true
-    echo "${count:-0}"
-}
-
-# Write a minimal results.json matching the real schema into the given directory.
-# use_case lives under dataset_config, which is what the grep in count_existing_results targets.
-_make_result() {
-    local dir="$1" use_case="$2"
-    mkdir -p "$dir"
-    printf '{"test_type": "offline-batch", "dataset_config": {"use_case": "%s"}}\n' \
-        "$use_case" > "$dir/results.json"
-}
+# These tests use count_existing_results directly from offline-batch-helpers.sh
+# (no inline copy needed).
 
 # Test 9: returns 0 when the model results directory does not exist
 test_count_no_results_dir() {
@@ -195,7 +207,7 @@ test_count_no_results_dir() {
     trap 'rm -rf "$tmpdir"' RETURN
     local REPO_ROOT="$tmpdir"
     local result
-    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    result=$(count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
     assert_equals "0" "$result" "count returns 0 when no results dir exists"
 }
 
@@ -209,7 +221,7 @@ test_count_full_skip() {
     _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
     _make_result "$tmpdir/results/llm/model__foo/run3/16cores-sharegpt-1000prompts" "summarization"
     local result
-    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    result=$(count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
     assert_equals "3" "$result" "count returns 3 when 3 runs are complete (full skip)"
 }
 
@@ -222,7 +234,7 @@ test_count_partial_resume() {
     _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
     _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
     local result
-    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    result=$(count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
     assert_equals "2" "$result" "count returns 2 when 2 of 3 runs are complete (partial resume)"
 }
 
@@ -235,7 +247,7 @@ test_count_no_false_match_use_case() {
     _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
     _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
     local result
-    result=$(_count_existing_results "model/foo" "classification" 16 "sharegpt" 1000)
+    result=$(count_existing_results "model/foo" "classification" 16 "sharegpt" 1000)
     assert_equals "0" "$result" "summarization results do not count toward classification sweep"
 }
 
@@ -248,7 +260,7 @@ test_count_prompt_isolation() {
     _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-500prompts" "summarization"
     _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-500prompts" "summarization"
     local result
-    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    result=$(count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
     assert_equals "0" "$result" "500-prompt results do not count toward 1000-prompt sweep"
 }
 
@@ -261,8 +273,107 @@ test_count_dataset_isolation() {
     _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sonnet-500prompts" "etl"
     _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sonnet-500prompts" "etl"
     local result
-    result=$(_count_existing_results "model/foo" "etl" 16 "sharegpt" 500)
+    result=$(count_existing_results "model/foo" "etl" 16 "sharegpt" 500)
     assert_equals "0" "$result" "sonnet results do not count toward sharegpt sweep"
+}
+
+# ── run_with_resume tests ─────────────────────────────────────────────────────
+# run_test is stubbed per test. Stubs write to a calls file so we can verify
+# call count from the parent after the subshell exits.
+
+# Test 15: full skip — run_test must not be called when all runs exist
+test_resume_full_skip() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run3/16cores-sharegpt-1000prompts" "summarization"
+
+    local calls_file="$tmpdir/calls.log"
+    run_test() { echo "called" >> "$calls_file"; return 0; }
+
+    local output
+    output=$(OFFLINE_BATCH_FORCE=0 run_with_resume \
+        "model/foo" "summarization" "sharegpt" 1000 16 3 -e "use_case=summarization" 2>&1)
+
+    assert_contains "$output" "SKIP" "full skip: SKIP message shown"
+    local call_count=0
+    [[ -f "$calls_file" ]] && call_count=$(wc -l < "$calls_file" | tr -d ' ')
+    assert_equals "0" "$call_count" "full skip: run_test not called"
+
+    # Restore default stub
+    run_test() { return 0; }
+}
+
+# Test 16: partial resume — correct run number shown, run_test called once for the missing run
+test_resume_partial() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+
+    local calls_file="$tmpdir/calls.log"
+    run_test() { echo "called" >> "$calls_file"; return 0; }
+
+    local output
+    output=$(OFFLINE_BATCH_FORCE=0 run_with_resume \
+        "model/foo" "summarization" "sharegpt" 1000 16 3 -e "use_case=summarization" 2>&1)
+
+    assert_contains "$output" "Run 3/3" "partial resume: run display shows Run 3/3"
+    local call_count=0
+    [[ -f "$calls_file" ]] && call_count=$(wc -l < "$calls_file" | tr -d ' ')
+    assert_equals "1" "$call_count" "partial resume: run_test called exactly once"
+
+    run_test() { return 0; }
+}
+
+# Test 17: --force bypass — run_test called for all runs even when results exist
+test_resume_force_bypass() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run3/16cores-sharegpt-1000prompts" "summarization"
+
+    local calls_file="$tmpdir/calls.log"
+    run_test() { echo "called" >> "$calls_file"; return 0; }
+
+    local output
+    output=$(OFFLINE_BATCH_FORCE=1 run_with_resume \
+        "model/foo" "summarization" "sharegpt" 1000 16 3 -e "use_case=summarization" 2>&1)
+
+    assert_not_contains "$output" "SKIP" "force: no SKIP message shown"
+    assert_contains "$output" "force" "force: force message shown"
+    local call_count=0
+    [[ -f "$calls_file" ]] && call_count=$(wc -l < "$calls_file" | tr -d ' ')
+    assert_equals "3" "$call_count" "force: run_test called 3 times"
+
+    run_test() { return 0; }
+}
+
+# Test 18: failure propagation — run_with_resume returns 1 when run_test fails
+test_resume_failure_propagation() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+
+    run_test() { return 1; }
+
+    local result="pass"
+    OFFLINE_BATCH_FORCE=0 run_with_resume \
+        "model/foo" "summarization" "sharegpt" 1000 16 1 -e "use_case=summarization" \
+        >/dev/null 2>&1 && result="pass" || result="fail"
+
+    assert_equals "fail" "$result" "failure propagation: run_with_resume returns 1 when run_test fails"
+
+    run_test() { return 0; }
 }
 
 # Main test execution
@@ -285,6 +396,10 @@ test_count_partial_resume
 test_count_no_false_match_use_case
 test_count_prompt_isolation
 test_count_dataset_isolation
+test_resume_full_skip
+test_resume_partial
+test_resume_force_bypass
+test_resume_failure_propagation
 
 echo
 echo "=========================================="
