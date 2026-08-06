@@ -162,6 +162,107 @@ test_all_keyword_expansion() {
     assert_equals "3" "${#MODELS[@]}" "'all' expands to 3 production models"
 }
 
+# ── count_existing_results fixture tests ─────────────────────────────────────
+# This function mirrors count_existing_results() in run-offline-batch-suite.sh.
+# If the find/grep logic changes in the script, update this definition too.
+_count_existing_results() {
+    local model="$1" ansible_use_case="$2" cores="$3" dataset="$4" num_prompts="$5"
+    local sanitized_model="${model//\//__}"
+    local results_base="${REPO_ROOT}/results/llm/${sanitized_model}"
+    [[ ! -d "$results_base" ]] && { echo 0; return; }
+    local file_list
+    file_list=$(find "$results_base" \
+        -path "*/${cores}cores-${dataset}-${num_prompts}prompts/results.json" 2>/dev/null)
+    [[ -z "$file_list" ]] && { echo 0; return; }
+    local count
+    count=$(echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' ') || true
+    echo "${count:-0}"
+}
+
+# Write a minimal results.json with the given use_case into the given directory
+_make_result() {
+    local dir="$1" use_case="$2"
+    mkdir -p "$dir"
+    printf '{"use_case": "%s", "throughput": 1.0}\n' "$use_case" > "$dir/results.json"
+}
+
+# Test 9: returns 0 when the model results directory does not exist
+test_count_no_results_dir() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    local result
+    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    assert_equals "0" "$result" "count returns 0 when no results dir exists"
+}
+
+# Test 10: full skip - all 3 runs already complete
+test_count_full_skip() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run3/16cores-sharegpt-1000prompts" "summarization"
+    local result
+    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    assert_equals "3" "$result" "count returns 3 when 3 runs are complete (full skip)"
+}
+
+# Test 11: partial resume - 2 of 3 runs complete
+test_count_partial_resume() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+    local result
+    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    assert_equals "2" "$result" "count returns 2 when 2 of 3 runs are complete (partial resume)"
+}
+
+# Test 12: no false match across use cases (same dataset/prompts/cores, different use_case)
+test_count_no_false_match_use_case() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-1000prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-1000prompts" "summarization"
+    local result
+    result=$(_count_existing_results "model/foo" "classification" 16 "sharegpt" 1000)
+    assert_equals "0" "$result" "summarization results do not count toward classification sweep"
+}
+
+# Test 13: prompt count isolation (500-prompt results must not count toward 1000-prompt sweep)
+test_count_prompt_isolation() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sharegpt-500prompts" "summarization"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sharegpt-500prompts" "summarization"
+    local result
+    result=$(_count_existing_results "model/foo" "summarization" 16 "sharegpt" 1000)
+    assert_equals "0" "$result" "500-prompt results do not count toward 1000-prompt sweep"
+}
+
+# Test 14: dataset name isolation (sonnet results must not count toward sharegpt sweep)
+test_count_dataset_isolation() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+    local REPO_ROOT="$tmpdir"
+    _make_result "$tmpdir/results/llm/model__foo/run1/16cores-sonnet-500prompts" "etl"
+    _make_result "$tmpdir/results/llm/model__foo/run2/16cores-sonnet-500prompts" "etl"
+    local result
+    result=$(_count_existing_results "model/foo" "etl" 16 "sharegpt" 500)
+    assert_equals "0" "$result" "sonnet results do not count toward sharegpt sweep"
+}
+
 # Main test execution
 echo "=========================================="
 echo "run-offline-batch-suite.sh Unit Tests"
@@ -176,6 +277,12 @@ test_default_container_image
 test_usage_message
 test_comma_separated_models
 test_all_keyword_expansion
+test_count_no_results_dir
+test_count_full_skip
+test_count_partial_resume
+test_count_no_false_match_use_case
+test_count_prompt_isolation
+test_count_dataset_isolation
 
 echo
 echo "=========================================="

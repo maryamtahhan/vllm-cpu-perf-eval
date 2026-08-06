@@ -121,7 +121,7 @@ MODES:
       - Ultra-short labeling (output 16 tokens)
 
       Models: Single model or comma-separated list. Use 'all' for the 3 production RedHatAI models
-               (w8a8, w4a16 Llama, Qwen3 w4a16). TinyLlama is smoke-test only — pass explicitly.
+               (w8a8, w4a16 Llama, Qwen3 w4a16). TinyLlama is smoke-test only - pass explicitly.
 
       Resume: Skips configs that already have the requested number of completed results.
               Partial configs resume from where they left off. Use --force to override.
@@ -227,7 +227,9 @@ count_existing_results() {
         echo 0
         return
     fi
-    echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' '
+    local count
+    count=$(echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' ') || true
+    echo "${count:-0}"
 }
 
 # Run a single config with skip/resume logic.
@@ -263,6 +265,7 @@ run_with_resume() {
         local run_display=$((existing_runs + run))
         echo "    Run $run_display/$runs..."
         if ! run_test "$model" "$dataset" "$num_prompts" "$cores" "$@"; then
+            echo -e "${RED}    FAILED: Run $run_display/$runs${NC}"
             run_failed=1
         fi
     done

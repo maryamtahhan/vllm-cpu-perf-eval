@@ -105,7 +105,7 @@
 
     - name: Check if model is already cached
       ansible.builtin.stat:
-        path: "{{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}"
+        path: "{{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}/snapshots"
       register: model_cache_check
 
     - name: Display cache status
@@ -131,9 +131,10 @@
 
     - name: Get model snapshot path
       ansible.builtin.shell: |
-        ls -d {{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}/snapshots/* | head -1
+        ls -d {{ dut_cache_dir }}/models--{{ test_model | replace('/', '--') }}/snapshots/* 2>/dev/null | head -1
       register: model_snapshot_path
       changed_when: false
+      failed_when: model_snapshot_path.stdout | trim | length == 0
 
     - name: Set model facts for localhost
       ansible.builtin.set_fact:
