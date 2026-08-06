@@ -191,6 +191,28 @@ calculate_timeout() {
     echo $timeout
 }
 
+# Count completed results for a model/use_case/cores combination
+count_existing_results() {
+    local model="$1"
+    local ansible_use_case="$2"
+    local cores="$3"
+    local sanitized_model="${model//\//__}"
+    local results_base="${REPO_ROOT}/results/llm/${sanitized_model}"
+
+    if [[ ! -d "$results_base" ]]; then
+        echo 0
+        return
+    fi
+
+    local file_list
+    file_list=$(find "$results_base" -path "*/${cores}cores-*" -name "results.json" 2>/dev/null)
+    if [[ -z "$file_list" ]]; then
+        echo 0
+        return
+    fi
+    echo "$file_list" | xargs grep -l "\"use_case\": \"${ansible_use_case}\"" 2>/dev/null | wc -l | tr -d ' '
+}
+
 # Run Ansible playbook with timeout and retry
 run_ansible_with_timeout() {
     local timeout_seconds=$1
@@ -955,15 +977,31 @@ use_case_sweep() {
     echo "Parameters: $num_prompts prompts"
     echo
 
+    # Extract the ansible use_case value from extra_args for result counting
+    local ansible_use_case
+    ansible_use_case=$(echo "$extra_args" | grep -o 'use_case=[^ ]*' | cut -d= -f2)
+
     # Run tests for each model and core count
     for model in "${MODELS[@]}"; do
         echo -e "${GREEN}Model: $model${NC}"
         for cores in "${CORES[@]}"; do
-            echo "  Cores: $cores"
-            for run in $(seq 1 $runs); do
-                echo "    Run $run/$runs..."
+            local existing_runs
+            existing_runs=$(count_existing_results "$model" "$ansible_use_case" "$cores")
+            local remaining=$((runs - existing_runs))
+            if [[ $remaining -le 0 ]]; then
+                echo "  Cores: $cores — SKIP ($existing_runs/$runs runs already complete)"
+                continue
+            fi
+            if [[ $existing_runs -gt 0 ]]; then
+                echo "  Cores: $cores ($existing_runs/$runs done, running $remaining more)"
+            else
+                echo "  Cores: $cores"
+            fi
+            for run in $(seq 1 $remaining); do
+                local run_display=$((existing_runs + run))
+                echo "    Run $run_display/$runs..."
                 if ! run_test "$model" "$dataset" "$num_prompts" "$cores" $extra_args; then
-                    failed_tests+=("$use_case_name - $model - $cores cores - Run $run")
+                    failed_tests+=("$use_case_name - $model - $cores cores - Run $run_display")
                 fi
             done
         done
