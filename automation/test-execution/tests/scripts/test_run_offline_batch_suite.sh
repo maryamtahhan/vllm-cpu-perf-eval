@@ -179,11 +179,13 @@ _count_existing_results() {
     echo "${count:-0}"
 }
 
-# Write a minimal results.json with the given use_case into the given directory
+# Write a minimal results.json matching the real schema into the given directory.
+# use_case lives under dataset_config, which is what the grep in count_existing_results targets.
 _make_result() {
     local dir="$1" use_case="$2"
     mkdir -p "$dir"
-    printf '{"use_case": "%s", "throughput": 1.0}\n' "$use_case" > "$dir/results.json"
+    printf '{"test_type": "offline-batch", "dataset_config": {"use_case": "%s"}}\n' \
+        "$use_case" > "$dir/results.json"
 }
 
 # Test 9: returns 0 when the model results directory does not exist
