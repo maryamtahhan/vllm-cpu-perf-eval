@@ -77,6 +77,20 @@ TIMEOUT_PER_PROMPT="${OFFLINE_BATCH_TIMEOUT_PER_PROMPT:-$DEFAULT_TIMEOUT_PER_PRO
 MAX_RETRIES="${OFFLINE_BATCH_MAX_RETRIES:-1}"  # Retry once on timeout/failure
 RETRY_DELAY=30  # Seconds to wait between retries
 
+# Cap prompt count per benchmark run (mirrors the 10-min online time limit).
+# Set OFFLINE_BATCH_MAX_PROMPTS=0 or unset to use each use case's natural count.
+OFFLINE_BATCH_MAX_PROMPTS="${OFFLINE_BATCH_MAX_PROMPTS:-100}"
+
+# cap_prompts N — return N capped at OFFLINE_BATCH_MAX_PROMPTS (0 = no cap)
+cap_prompts() {
+    local n=$1
+    if [[ "${OFFLINE_BATCH_MAX_PROMPTS:-0}" -gt 0 && "$n" -gt "$OFFLINE_BATCH_MAX_PROMPTS" ]]; then
+        echo "$OFFLINE_BATCH_MAX_PROMPTS"
+    else
+        echo "$n"
+    fi
+}
+
 # Detect timeout command (GNU timeout on Linux, gtimeout from coreutils on macOS)
 TIMEOUT_CMD=""
 if command -v timeout &> /dev/null; then
@@ -446,7 +460,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "summarization" "sharegpt" 1000 16 "$runs" \
+        if ! run_with_resume "$model" "summarization" "sharegpt" "$(cap_prompts 1000)" 16 "$runs" \
                 -e "use_case=summarization"; then
             failed_tests+=("Document Processing - $model")
         fi
@@ -461,7 +475,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "classification" "sharegpt" 1000 16 "$runs" \
+        if ! run_with_resume "$model" "classification" "sharegpt" "$(cap_prompts 1000)" 16 "$runs" \
                 -e "output_len=64" -e "use_case=classification"; then
             failed_tests+=("Classification - $model")
         fi
@@ -476,7 +490,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "translation" "sharegpt" 500 16 "$runs" \
+        if ! run_with_resume "$model" "translation" "sharegpt" "$(cap_prompts 500)" 16 "$runs" \
                 -e "output_len=1024" -e "use_case=translation"; then
             failed_tests+=("Translation - $model")
         fi
@@ -491,7 +505,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "entity_extraction" "sharegpt" 1000 16 "$runs" \
+        if ! run_with_resume "$model" "entity_extraction" "sharegpt" "$(cap_prompts 1000)" 16 "$runs" \
                 -e "output_len=128" -e "use_case=entity_extraction"; then
             failed_tests+=("Entity Extraction - $model")
         fi
@@ -506,7 +520,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "dataset_generation" "random" 5000 32 "$runs" \
+        if ! run_with_resume "$model" "dataset_generation" "random" "$(cap_prompts 5000)" 32 "$runs" \
                 -e "input_len=256" -e "output_len=256" -e "use_case=dataset_generation"; then
             failed_tests+=("Dataset Generation - $model")
         fi
@@ -522,7 +536,7 @@ use_cases_suite() {
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
         for cores in 8 16 24 32; do
-            if ! run_with_resume "$model" "etl" "sonnet" 500 "$cores" "$runs" \
+            if ! run_with_resume "$model" "etl" "sonnet" "$(cap_prompts 500)" "$cores" "$runs" \
                     -e "use_case=etl"; then
                 failed_tests+=("ETL ($cores cores) - $model")
             fi
@@ -538,7 +552,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "code_generation" "random" 500 16 "$runs" \
+        if ! run_with_resume "$model" "code_generation" "random" "$(cap_prompts 500)" 16 "$runs" \
                 -e "input_len=512" -e "output_len=512" -e "use_case=code_generation"; then
             failed_tests+=("Code Generation - $model")
         fi
@@ -553,7 +567,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "long_summarization" "random" 500 16 "$runs" \
+        if ! run_with_resume "$model" "long_summarization" "random" "$(cap_prompts 500)" 16 "$runs" \
                 -e "input_len=4096" -e "output_len=256" -e "use_case=long_summarization"; then
             failed_tests+=("Long-Document Summarization - $model")
         fi
@@ -568,7 +582,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "rag_batch" "random" 500 16 "$runs" \
+        if ! run_with_resume "$model" "rag_batch" "random" "$(cap_prompts 500)" 16 "$runs" \
                 -e "input_len=2048" -e "output_len=128" -e "use_case=rag_batch"; then
             failed_tests+=("RAG Batch - $model")
         fi
@@ -583,7 +597,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "shared_prefix" "random" 1000 16 "$runs" \
+        if ! run_with_resume "$model" "shared_prefix" "random" "$(cap_prompts 1000)" 16 "$runs" \
                 -e "input_len=1024" -e "output_len=64" -e "use_case=shared_prefix"; then
             failed_tests+=("Shared-Prefix - $model")
         fi
@@ -598,7 +612,7 @@ use_cases_suite() {
     echo
     for model in "${MODELS[@]}"; do
         echo "  Model: $model"
-        if ! run_with_resume "$model" "short_labeling" "sharegpt" 2000 16 "$runs" \
+        if ! run_with_resume "$model" "short_labeling" "sharegpt" "$(cap_prompts 2000)" 16 "$runs" \
                 -e "output_len=16" -e "use_case=short_labeling"; then
             failed_tests+=("Ultra-Short Labeling - $model")
         fi
