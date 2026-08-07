@@ -1560,15 +1560,19 @@ def main():
         with col6:
             # Scenario filter - remove empty strings and deduplicate
             scenarios = sorted(set([s for s in df['scenario'].unique() if s and s.strip()]))
-            # Auto-select newly available scenarios: Streamlit preserves widget state across
-            # reruns, so if the session started when only 'baseline' existed, 'latency' and
-            # 'all' would silently stay deselected after data is added. Fix: whenever the
-            # available scenario set grows, merge the new scenarios into the selection.
+            # Preserve deselections while auto-selecting newly available scenarios:
+            # intersect prev_selection with current scenarios (drops gone options and
+            # respects user deselections), then union only the net-new scenarios so
+            # they are selected by default when they first appear.
             _scenario_key = '_embedding_scenario_filter'
             _scenario_opts_key = '_embedding_scenario_opts'
             if st.session_state.get(_scenario_opts_key) != scenarios:
+                prev_opts = set(st.session_state.get(_scenario_opts_key, []))
                 prev_selection = set(st.session_state.get(_scenario_key, scenarios))
-                st.session_state[_scenario_key] = sorted(prev_selection | set(scenarios))
+                new_scenarios = set(scenarios) - prev_opts
+                st.session_state[_scenario_key] = sorted(
+                    (prev_selection & set(scenarios)) | new_scenarios
+                )
                 st.session_state[_scenario_opts_key] = scenarios
             selected_scenarios = st.multiselect(
                 "Scenario",
