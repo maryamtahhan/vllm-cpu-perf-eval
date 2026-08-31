@@ -38,10 +38,10 @@ _LOCAL_TO_LEADERBOARD: Dict[str, str] = {
     "antares-1b": "Antares-1B-GRPO",
     "antares-3b": "Antares-3B-GRPO",
     "qwen3.5-9b": "Qwen3.5-9B",
-    "qwen3.5-27b": "Qwen3.5-27B",
-    "qwen3.5-35b-a3b": "Qwen3.5-35B-A3B",
-    "qwen3.5-72b": "Qwen3.5-72B",
-    "qwen3.5-122b": "Qwen3.5-122B",
+    # RedHatAI quantized variant maps to the same leaderboard entry
+    "qwen3.5-9b-quantized.w8a8": "Qwen3.5-9B",
+    "gemma-4-e4b-it": "Gemma-4-E4B",
+    "gemma-4-e2b-it": "Gemma-4-E2B",
 }
 
 # Colors shared across charts
@@ -772,9 +772,8 @@ def main():
         st.divider()
         st.subheader("3️⃣ Upstream Leaderboard Context")
         st.caption(
-            "This section is Phase A File F1 only — the same skill as chart 1, "
-            "compared with the published GPU leaderboard. It is not a Phase B "
-            "ranking."
+            "Phase A (File F1) and Phase B (TNR) are shown separately, "
+            "mirroring the published leaderboard structure."
         )
 
         lb_df, lb_source = load_leaderboard()
@@ -794,23 +793,34 @@ def main():
                 lb_name = row["leaderboard_name"]
                 f1 = row["mean_file_f1"]
                 if lb_name and pd.notna(f1):
-                    # Keep the best local score if model appears multiple times
                     if lb_name not in local_scores or f1 > local_scores[lb_name]:
                         local_scores[lb_name] = f1
+
+            # Build local TNR scores from Phase B runs
+            local_tnr_scores: Dict[str, float] = {}
+            if not phase_b_data.empty:
+                for _, row in phase_b_data.iterrows():
+                    lb_name = row.get("leaderboard_name")
+                    tnr = row.get("true_negative_rate")
+                    if lb_name and pd.notna(lb_name) and pd.notna(tnr):
+                        if (lb_name not in local_tnr_scores
+                                or tnr > local_tnr_scores[lb_name]):
+                            local_tnr_scores[lb_name] = float(tnr)
 
             # Merge leaderboard with local scores
             lb_df["local_file_f1"] = lb_df["lb_model"].map(local_scores)
             lb_df["has_local"] = lb_df["local_file_f1"].notna()
+            lb_df["local_tnr"] = lb_df["lb_model"].map(local_tnr_scores)
+            lb_df["has_local_tnr"] = lb_df["local_tnr"].notna()
 
+            st.markdown("#### Phase A — File F1 (find the bug)")
             st.markdown(
-                "The published leaderboard is a **Phase A File F1** ranking "
-                "(GPU). One chart cannot show both a 0.22 GPT-class score and "
-                "a 0.002 Granite score without flattening the models we "
+                "The published leaderboard ranks by **Phase A File F1** "
+                "(GPU). One chart cannot show both a 0.22 GPT-class score "
+                "and a 0.002 Granite score without flattening the models we "
                 "actually ran. The three charts below group models by score "
                 "band; each band has its own vertical scale. ★ marks models "
-                "we tested on CPU. Placement follows File F1, not Phase B "
-                "TNR — Granite belongs in the low band here even when its "
-                "Phase B score is high."
+                "we tested on CPU."
             )
 
             tested = lb_df[lb_df["has_local"]].copy()
@@ -849,57 +859,184 @@ def main():
             st.caption(
                 "Purple bars = leaderboard reference scores (GPU). "
                 "Blue bars = our CPU results on the same model (★). "
-                "CPU scores may differ from GPU reference due to "
-                "different n_limit, temperature sensitivity, and inference speed. "
-                "These charts are Phase A File F1 only — they do not rank "
-                "Phase B (don't-cry-wolf) performance."
+                "CPU scores may differ from GPU reference due to different "
+                "n_limit, temperature sensitivity, and inference speed."
             )
 
-            # Leaderboard table with local score column
+            # ------------------------------------------------------------------
+            # Phase B leaderboard comparison — True Negative Rate
+            # ------------------------------------------------------------------
+            st.markdown("#### Phase B — True Negative Rate (don't cry wolf)")
+            st.markdown(
+                "Models that have leaderboard TNR data are shown below. "
+                "★ marks models we ran on CPU with Phase B tasks. "
+                "A high TNR without a matching Phase A score is not a "
+                "passing grade — it just means the model rarely reports "
+                "anything."
+            )
+
+            tnr_lb = lb_df[
+                lb_df["lb_true_negative_rate"].notna()
+            ].sort_values("lb_true_negative_rate", ascending=False).copy()
+
+            if not tnr_lb.empty:
+                tnr_lb["xlabel"] = tnr_lb.apply(
+                    lambda r: f"★ {r['lb_model']}"
+                    if r["has_local_tnr"] else r["lb_model"],
+                    axis=1,
+                )
+
+                fig_tnr_lb = go.Figure()
+                fig_tnr_lb.add_trace(go.Bar(
+                    name="Leaderboard TNR (GPU)",
+                    x=tnr_lb["xlabel"],
+                    y=tnr_lb["lb_true_negative_rate"].fillna(0),
+                    marker_color=_COLORS["leaderboard"],
+                    opacity=0.75,
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "GPU TNR: %{y:.3f}<extra></extra>"
+                    ),
+                ))
+                local_tnr_rows = tnr_lb[tnr_lb["has_local_tnr"]]
+                if not local_tnr_rows.empty:
+                    fig_tnr_lb.add_trace(go.Bar(
+                        name="Our results (CPU TNR)",
+                        x=local_tnr_rows["xlabel"],
+                        y=local_tnr_rows["local_tnr"],
+                        text=[
+                            f"{v:.3f}"
+                            for v in local_tnr_rows["local_tnr"]
+                        ],
+                        textposition="auto",
+                        marker_color=_COLORS["tnr"],
+                        marker_line=dict(width=1.5, color="#005a00"),
+                        hovertemplate=(
+                            "<b>%{x}</b><br>"
+                            "CPU TNR: %{y:.3f}<extra></extra>"
+                        ),
+                    ))
+                fig_tnr_lb.update_layout(
+                    barmode="group",
+                    title="Phase B — True Negative Rate: GPU vs CPU (★)",
+                    xaxis_title=(
+                        "Model  (★ = we tested this model on CPU)"
+                    ),
+                    yaxis_title="True Negative Rate",
+                    yaxis=dict(range=[0, 1]),
+                    height=420,
+                    legend=dict(
+                        orientation="h", yanchor="bottom", y=1.02
+                    ),
+                    xaxis_tickangle=-30,
+                )
+                st.plotly_chart(fig_tnr_lb, use_container_width=True)
+                st.caption(
+                    "Purple bars = GPU leaderboard TNR. "
+                    "Green bars = our CPU TNR (★). "
+                    "Antares and Granite-4.0 models have no leaderboard "
+                    "Phase B entry and do not appear here."
+                )
+            else:
+                st.info(
+                    "No Phase B leaderboard data available "
+                    "in the current snapshot."
+                )
+
+            # Leaderboard table with local score columns for both phases
             with st.expander("📋 Full leaderboard table", expanded=False):
                 display_lb = lb_df[
-                    ["lb_model", "lb_size", "lb_type", "lb_file_f1",
-                     "lb_true_negative_rate", "lb_submitted_nothing_rate",
-                     "local_file_f1"]
+                    ["lb_model", "lb_size", "lb_type",
+                     "lb_file_f1", "lb_true_negative_rate",
+                     "lb_submitted_nothing_rate",
+                     "local_file_f1", "local_tnr"]
                 ].copy()
                 display_lb.columns = [
-                    "Model", "Size", "Type", "File F1 (LB)",
-                    "TNR (LB)", "Abstain Rate (LB)", "File F1 (Our CPU)"
+                    "Model", "Size", "Type",
+                    "File F1 (LB)", "TNR (LB)",
+                    "Abstain Rate (LB)",
+                    "File F1 (Our CPU)", "TNR (Our CPU)",
                 ]
-                display_lb = display_lb.sort_values("File F1 (LB)", ascending=False)
-                for col in ["File F1 (LB)", "TNR (LB)", "Abstain Rate (LB)", "File F1 (Our CPU)"]:
+                display_lb = display_lb.sort_values(
+                    "File F1 (LB)", ascending=False
+                )
+                for col in [
+                    "File F1 (LB)", "TNR (LB)",
+                    "Abstain Rate (LB)",
+                    "File F1 (Our CPU)", "TNR (Our CPU)",
+                ]:
                     display_lb[col] = display_lb[col].apply(
                         lambda v: f"{v:.3f}" if pd.notna(v) else "—"
                     )
-                st.dataframe(display_lb, hide_index=True, use_container_width=True)
+                st.dataframe(
+                    display_lb, hide_index=True, use_container_width=True
+                )
 
-            # Delta table — only models we tested
+            def _delta_style(v):
+                if isinstance(v, float) and v >= 0:
+                    return "color: green"
+                if isinstance(v, float) and v < 0:
+                    return "color: red"
+                return ""
+
+            # Phase A delta table
             matched = lb_df[lb_df["has_local"]].copy()
             if not matched.empty:
-                st.markdown("**Score delta for tested models:**")
-                matched["delta"] = matched["local_file_f1"] - matched["lb_file_f1"]
-                delta_cols = ["lb_model", "lb_file_f1", "local_file_f1", "delta"]
-                delta_df = matched[delta_cols].copy()
-                delta_df.columns = ["Model", "LB File F1 (GPU)", "Our File F1 (CPU)", "Delta"]
-                delta_df = delta_df.sort_values("Our File F1 (CPU)", ascending=False)
+                st.markdown("**Phase A — score delta for tested models:**")
+                matched["delta"] = (
+                    matched["local_file_f1"] - matched["lb_file_f1"]
+                )
+                delta_df = matched[
+                    ["lb_model", "lb_file_f1", "local_file_f1", "delta"]
+                ].copy()
+                delta_df.columns = [
+                    "Model", "LB File F1 (GPU)",
+                    "Our File F1 (CPU)", "Delta",
+                ]
+                delta_df = delta_df.sort_values(
+                    "Our File F1 (CPU)", ascending=False
+                )
                 st.dataframe(
                     delta_df.style.format({
                         "LB File F1 (GPU)": "{:.3f}",
                         "Our File F1 (CPU)": "{:.3f}",
                         "Delta": "{:+.3f}",
-                    }).map(
-                        lambda v: "color: green" if isinstance(v, float) and v >= 0
-                        else ("color: red" if isinstance(v, float) and v < 0 else ""),
-                        subset=["Delta"],
-                    ),
+                    }).map(_delta_style, subset=["Delta"]),
                     hide_index=True,
                     use_container_width=True,
                 )
                 st.caption(
                     "Positive delta = our CPU result exceeds the GPU "
                     "leaderboard for that model. "
-                    "Negative delta is expected for n_limit smoke tests "
-                    "(fewer tasks = noisier score)."
+                    "Negative delta is expected for n_limit smoke tests."
+                )
+
+            # Phase B delta table
+            matched_tnr = lb_df[lb_df["has_local_tnr"]].copy()
+            if not matched_tnr.empty:
+                st.markdown("**Phase B — TNR delta for tested models:**")
+                matched_tnr["tnr_delta"] = (
+                    matched_tnr["local_tnr"]
+                    - matched_tnr["lb_true_negative_rate"]
+                )
+                tnr_delta_df = matched_tnr[
+                    ["lb_model", "lb_true_negative_rate",
+                     "local_tnr", "tnr_delta"]
+                ].copy()
+                tnr_delta_df.columns = [
+                    "Model", "LB TNR (GPU)", "Our TNR (CPU)", "Delta",
+                ]
+                tnr_delta_df = tnr_delta_df.sort_values(
+                    "Our TNR (CPU)", ascending=False
+                )
+                st.dataframe(
+                    tnr_delta_df.style.format({
+                        "LB TNR (GPU)": "{:.3f}",
+                        "Our TNR (CPU)": "{:.3f}",
+                        "Delta": "{:+.3f}",
+                    }).map(_delta_style, subset=["Delta"]),
+                    hide_index=True,
+                    use_container_width=True,
                 )
 
     # ==================================================================

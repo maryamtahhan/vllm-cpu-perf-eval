@@ -120,6 +120,18 @@ test_model_constants() {
         "MODEL_ANTARES_1B defined"
     assert_contains "$script_content" 'MODEL_ANTARES_350M="fdtn-ai/antares-350m"' \
         "MODEL_ANTARES_350M defined"
+    assert_contains "$script_content" 'MODEL_REDHAT_QWEN_9B_W8A8="RedHatAI/Qwen3.5-9B-quantized.w8a8"' \
+        "MODEL_REDHAT_QWEN_9B_W8A8 defined"
+    assert_contains "$script_content" 'MODEL_REDHAT_GEMMA_E4B="RedHatAI/gemma-4-E4B-it"' \
+        "MODEL_REDHAT_GEMMA_E4B defined"
+    assert_contains "$script_content" 'MODEL_QWEN_CODER_7B="Qwen/Qwen2.5-Coder-7B-Instruct"' \
+        "MODEL_QWEN_CODER_7B defined"
+    assert_contains "$script_content" 'MODEL_QWEN3_8B="Qwen/Qwen3-8B"' \
+        "MODEL_QWEN3_8B defined"
+    assert_contains "$script_content" 'MODEL_PHI4_MINI="microsoft/Phi-4-mini-instruct"' \
+        "MODEL_PHI4_MINI defined"
+    assert_contains "$script_content" 'MODEL_LLAMA32_3B="meta-llama/Llama-3.2-3B-Instruct"' \
+        "MODEL_LLAMA32_3B defined"
 }
 
 # ============================================================================
@@ -138,6 +150,10 @@ test_runner_detection() {
         "Qwen runner referenced"
     assert_contains "$script_content" 'vllm_gemma_4' \
         "Gemma runner referenced"
+    assert_contains "$script_content" 'vllm_phi4' \
+        "Phi-4 runner referenced"
+    assert_contains "$script_content" 'vllm_llama3' \
+        "Llama3 runner referenced"
 }
 
 # ============================================================================
@@ -192,6 +208,10 @@ test_model_presets() {
         "PRESET_QWEN defined"
     assert_contains "$script_content" 'PRESET_ANTARES=' \
         "PRESET_ANTARES defined"
+    assert_contains "$script_content" 'PRESET_REDHAT=' \
+        "PRESET_REDHAT defined"
+    assert_contains "$script_content" 'PRESET_COMMUNITY=' \
+        "PRESET_COMMUNITY defined"
     assert_contains "$script_content" 'PRESET_PUBLIC=' \
         "PRESET_PUBLIC defined"
     assert_contains "$script_content" 'PRESET_ALL=' \
@@ -281,6 +301,35 @@ test_dry_run_container_image_and_permissive() {
         "Dry-run forwards --permissive as vloc_permissive=true"
 }
 
+test_dry_run_phi4_runner() {
+    local output
+    output=$("$SUITE_SCRIPT" phase-a \
+        --models microsoft/Phi-4-mini-instruct --dry-run 2>&1)
+
+    assert_contains "$output" "vloc_runner=vllm_phi4" \
+        "Phi-4 model selects vllm_phi4 runner"
+}
+
+test_dry_run_llama3_runner() {
+    local output
+    output=$("$SUITE_SCRIPT" phase-a \
+        --models meta-llama/Llama-3.2-3B-Instruct --dry-run 2>&1)
+
+    assert_contains "$output" "vloc_runner=vllm_llama3" \
+        "Llama3 model selects vllm_llama3 runner"
+}
+
+test_cpu_isolation_flags() {
+    local output
+    output=$("$SUITE_SCRIPT" smoke \
+        --vllm-cpuset 0-23 --harness-cpuset 24-47 --dry-run 2>&1)
+
+    assert_contains "$output" "vloc_vllm_cpuset_cpus=0-23" \
+        "--vllm-cpuset forwarded as vloc_vllm_cpuset_cpus"
+    assert_contains "$output" "vloc_harness_cpuset_cpus=24-47" \
+        "--harness-cpuset forwarded as vloc_harness_cpuset_cpus"
+}
+
 test_dry_run_quoted_vloc_dir() {
     local tmp_root
     tmp_root=$(mktemp -d)
@@ -317,7 +366,10 @@ test_dry_run_flag
 test_no_token_logging
 test_dry_run_smoke_smallest_granite
 test_dry_run_antares_runner
+test_dry_run_phi4_runner
+test_dry_run_llama3_runner
 test_dry_run_container_image_and_permissive
+test_cpu_isolation_flags
 test_dry_run_quoted_vloc_dir
 
 echo
