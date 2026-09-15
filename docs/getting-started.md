@@ -191,6 +191,17 @@ This configures CPU isolation, performance governor, NUMA optimizations, etc.
 ./cpueval run --suite embedding \
   --model RedHatAI/granite-embedding-english-r2 \
   --cores 16
+
+# Multi-turn conversation performance benchmark
+./cpueval run --suite multiturn \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 32
+
+# GSM8K multi-turn quality (accuracy) test
+./cpueval run --suite gsm8k-quality \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 16 \
+  --turns-mode answer-forcing
 ```
 
 #### 6. View Results with cpueval

@@ -159,7 +159,43 @@ done
   --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
   --cores 16 \
   --dry-run
+
+# Multi-turn conversation benchmark (default: 4 turns, 512-token prefix)
+./cpueval run --suite multiturn \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 32
+
+# Multi-turn with custom conversation shape
+./cpueval run --suite multiturn \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 32 \
+  --turns 8 \
+  --extra guidellm_prefix_tokens=1024 guidellm_prefix_count=5
+
+# GSM8K multi-turn quality (accuracy) test
+./cpueval run --suite gsm8k-quality \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 16
+
+# GSM8K quality: guided-steps mode, 200 problems
+./cpueval run --suite gsm8k-quality \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --cores 16 \
+  --turns-mode guided-steps \
+  --num-problems 200
 ```
+
+**Multi-turn notes:**
+- The `multiturn` suite drives GuideLLM's synthetic multi-turn data (`turns`,
+  `prefix_tokens`, `prefix_count`); each conversation turn counts as one request
+  against `max_requests`/`max_seconds`.
+- `--turns` overrides the workload default (4). Prefix overrides go through
+  `--extra guidellm_prefix_tokens=...` / `guidellm_prefix_count=...`.
+- For prefix-caching runs add `--extra vllm_caching_mode=production` (or your
+  usual caching override).
+- `gsm8k-quality` writes `quality-results.json` under
+  `results/llm/<model>/gsm8k_quality-<run-id>/<core-config>/` (accuracy, per-problem
+  records, token usage). Controller needs: `pip install datasets requests`.
 
 **Audio Examples:**
 
@@ -360,6 +396,8 @@ Model presets: `all` | `llama` | `qwen` | `tiny`
 |-------|--------|-------------|
 | `concurrent-load` | ansible | 3-phase concurrent load testing (baseline, realistic, production) |
 | `chat-smoke` | ansible | Quick auto-configured LLM chat test |
+| `multiturn` | ansible | Multi-turn conversation performance benchmark (GuideLLM synthetic conversations) |
+| `gsm8k-quality` | ansible | GSM8K multi-turn accuracy evaluation (answer-forcing or guided-steps) |
 | `embedding` | ansible | Embedding model performance tests |
 | `audio` | ansible | Audio model benchmarking (ASR, transcription, translation) |
 | `offline-batch` | script | Offline batch processing (high-throughput static workloads) |

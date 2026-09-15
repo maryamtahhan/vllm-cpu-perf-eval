@@ -1,0 +1,12 @@
+name: multiturn
+description: Multi-turn conversation performance benchmark (GuideLLM synthetic conversations)
+runner: ansible
+target: llm-benchmark-auto.yml
+
+defaults:
+  workload_type: chat_multiturn
+
+param_mappings:
+  model: test_model
+  workload: workload_type
+  cores: requested_cores

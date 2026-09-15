@@ -1,0 +1,410 @@
+---
+# GSM8K Multi-Turn Quality Evaluation
+# Runs multi-turn GSM8K conversations against an LLM endpoint and scores
+# final-answer accuracy (quality-results.json).
+#
+# Usage:
+#   ansible-playbook gsm8k-quality.yml \
+#     -e "test_model=meta-llama/Llama-3.2-1B-Instruct" \
+#     -e "requested_cores=16" \
+#     -e "gsm8k_turns_mode=answer-forcing"        # or guided-steps
+#     -e "gsm8k_num_problems=1319"                # optional, default: all
+#
+# External endpoint mode:
+#   ansible-playbook gsm8k-quality.yml \
+#     -e "vllm_endpoint.mode=external" \
+#     -e "VLLM_ENDPOINT_URL=http://host:8000"     # or set in endpoints.yml
+#
+# Requirements on the controller (runs the quality script):
+#   pip install datasets requests
+
+- name: "GSM8K Multi-Turn Quality - Setup"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    workload_type: gsm8k_quality
+
+  tasks:
+    - name: Detect if running from AWX
+      ansible.builtin.set_fact:
+        is_awx_job: "{{ lookup('env', 'AWX_JOB_ID') | length > 0 }}"
+        local_results_base: "{{ lookup('env', 'HOME') ~ '/benchmark-results' if (lookup('env', 'AWX_JOB_ID') | length > 0) else playbook_dir ~ '/../../../results/llm' }}"
+
+    - name: Set vLLM mode early for validation
+      ansible.builtin.set_fact:
+        vllm_mode: "{{ vllm_endpoint.mode | default('managed') }}"
+
+    - name: Validate required variables are defined (managed mode)
+      ansible.builtin.assert:
+        that:
+          - test_model is defined
+          - test_model != '__AUTO_DETECT__'
+          - requested_cores is defined
+          - requested_cores is not none
+        fail_msg: |
+          Missing required variables. Please provide:
+          -e "test_model=<model>"
+          -e "requested_cores=<8|16|32|64|...>"
+      when: vllm_mode == 'managed'
+
+    - name: Validate requested_cores is a positive integer (managed mode only)
+      ansible.builtin.assert:
+        that:
+          - requested_cores | int > 0
+          - requested_cores | int == requested_cores | float
+        fail_msg: "requested_cores must be a positive integer, got: {{ requested_cores }}"
+      when: vllm_mode == 'managed'
+
+    - name: Override core count to 0 for external mode
+      ansible.builtin.set_fact:
+        requested_cores: 0
+      when:
+        - vllm_mode == 'external'
+
+    - name: Validate gsm8k_turns_mode if provided
+      ansible.builtin.assert:
+        that:
+          - gsm8k_turns_mode in ['answer-forcing', 'guided-steps']
+        fail_msg: |
+          Invalid gsm8k_turns_mode: {{ gsm8k_turns_mode }}
+          Supported modes: answer-forcing, guided-steps
+      when: gsm8k_turns_mode is defined
+
+    - name: Set turns mode default
+      ansible.builtin.set_fact:
+        gsm8k_turns_mode: "answer-forcing"
+      when: gsm8k_turns_mode is not defined
+
+    - name: Validate gsm8k_num_problems if provided
+      ansible.builtin.assert:
+        that:
+          - gsm8k_num_problems | int >= 1
+        fail_msg: "gsm8k_num_problems must be a positive integer, got: {{ gsm8k_num_problems }}"
+      when:
+        - gsm8k_num_problems is defined
+        - gsm8k_num_problems | int != 0
+
+    - name: Generate test run ID
+      ansible.builtin.set_fact:
+        test_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+      when: test_run_id is not defined
+
+    - name: Handle external endpoint model detection/validation
+      when: vllm_mode == 'external'
+      block:
+        - name: Validate external endpoint URL is configured
+          ansible.builtin.assert:
+            that:
+              - vllm_endpoint.external.url is defined
+              - vllm_endpoint.external.url is not none
+              - vllm_endpoint.external.url | length > 0
+            fail_msg: |
+              External endpoint URL is required when mode=external.
+              Example:
+                export VLLM_ENDPOINT_URL=http://your-vllm-host:8000
+
+        - name: Get model from external endpoint
+          ansible.builtin.uri:
+            url: "{{ vllm_endpoint.external.url }}/v1/models"
+            method: GET
+            status_code: 200
+            validate_certs: false
+            headers: "{{ {'Authorization': 'Bearer ' + (vllm_endpoint.external.api_key | default(''))} if (vllm_endpoint.external.api_key_enabled | default(false)) else {} }}"
+          register: external_models_response
+          delegate_to: localhost
+
+        - name: Validate endpoint returned at least one model
+          ansible.builtin.assert:
+            that:
+              - external_models_response.json.data | length > 0
+            fail_msg: "External endpoint returned no models. URL: {{ vllm_endpoint.external.url }}/v1/models"
+
+        - name: Extract model name from endpoint
+          ansible.builtin.set_fact:
+            endpoint_model: "{{ external_models_response.json.data[0].id }}"
+
+        - name: Use endpoint model if test_model not provided or set to auto-detect
+          ansible.builtin.set_fact:
+            test_model: "{{ endpoint_model }}"
+            actual_model: "{{ endpoint_model }}"
+            model_source: "auto-detected"
+            cacheable: true
+          when: test_model is not defined or test_model == '__AUTO_DETECT__'
+
+        - name: Set actual_model to test_model if explicitly provided
+          ansible.builtin.set_fact:
+            actual_model: "{{ test_model }}"
+            model_source: "specified"
+            cacheable: true
+          when: test_model is defined and test_model != '__AUTO_DETECT__'
+
+        - name: Display model source
+          ansible.builtin.debug:
+            msg: "Detected model from endpoint: {{ actual_model }}"
+
+    - name: Set actual_model for managed mode
+      ansible.builtin.set_fact:
+        actual_model: "{{ test_model }}"
+        model_source: "specified"
+      when: vllm_mode == 'managed'
+
+    - name: Display GSM8K quality test information
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "GSM8K Multi-Turn Quality Evaluation"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Test Run ID: {{ test_run_id }}"
+          - "Model: {{ actual_model }}{{ ' (detected from endpoint)' if vllm_mode == 'external' else '' }}"
+          - "Turns Mode: {{ gsm8k_turns_mode }}"
+          - "Num Problems: {{ gsm8k_num_problems | default('all in split') }}"
+          - "Requested Cores: {{ requested_cores }}"
+          - "vLLM Mode: {{ vllm_mode }}"
+          - "{{ 'External Endpoint: ' + vllm_endpoint.external.url if vllm_mode == 'external' else 'Managed on DUT: ' + groups['dut'][0] }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: Set fallback core configuration for external mode
+      ansible.builtin.set_fact:
+        core_configuration:
+          name: "external-endpoint"
+          cores: "{{ requested_cores | int }}"
+          cpuset_cpus: "n/a"
+          cpuset_mems: "n/a"
+          tensor_parallel: "{{ requested_tensor_parallel | default(1) | int }}"
+      when: vllm_mode == 'external'
+
+# ==============================================================================
+# STEP 1: Detect NUMA Topology on DUT (Managed Mode Only)
+# ==============================================================================
+
+- name: "GSM8K Quality - Detect NUMA Topology"
+  hosts: dut
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: End play if in external mode
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['vllm_mode'] == 'external'
+
+  tasks:
+    - block:
+        - name: Detect NUMA topology on DUT
+          ansible.builtin.include_role:
+            name: common
+            tasks_from: detect-numa-topology
+
+        - name: Get CPU model name for platform identification
+          ansible.builtin.shell: |
+            lscpu | grep -i '^Model name' | sed 's/^[Mm]odel name:[[:space:]]*//' | head -1
+          register: cpu_model_raw
+          changed_when: false
+
+        - name: Set platform name from CPU model (sanitized)
+          ansible.builtin.set_fact:
+            dut_platform_name: "{{ cpu_model_raw.stdout | trim | regex_replace('[^a-zA-Z0-9]', '_') | regex_replace('_+', '_') | regex_replace('^_|_$', '') }}"
+
+        - name: Save sanitized platform name to localhost for later use
+          ansible.builtin.set_fact:
+            dut_platform_name: "{{ dut_platform_name }}"
+          delegate_to: localhost
+          delegate_facts: true
+
+      when: hostvars['localhost']['vllm_mode'] == 'managed'
+
+# ==============================================================================
+# STEP 2: Allocate Cores from Detected Topology (Managed Mode Only)
+# ==============================================================================
+
+- name: "GSM8K Quality - Allocate Cores"
+  hosts: dut
+  become: true
+  gather_facts: false
+  vars:
+    requested_cores: "{{ hostvars['localhost']['requested_cores'] }}"
+    requested_tensor_parallel: "{{ hostvars['localhost']['requested_tensor_parallel'] | default(omit) }}"
+    vllm_cpu_start: "{{ hostvars['localhost']['vllm_cpu_start'] | default(None) }}"
+    vllm_numa_node: "{{ hostvars['localhost']['vllm_numa_node'] | default(None) }}"
+
+  pre_tasks:
+    - name: End play if in external mode
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['vllm_mode'] == 'external'
+
+  tasks:
+    - name: Allocate cores from NUMA topology
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: allocate-cores-from-count
+
+    - name: Save auto-allocated config to localhost
+      ansible.builtin.set_fact:
+        core_configuration: "{{ auto_core_config }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+# ==============================================================================
+# STEP 3: Start vLLM with Auto-Allocated Configuration (Managed Mode Only)
+# ==============================================================================
+# Note: vllm_server role handles HF token setup, readiness wait, and clean
+# restart internally
+
+- name: "GSM8K Quality - Start vLLM"
+  hosts: dut
+  become: true
+  gather_facts: false
+  vars:
+    core_configuration: "{{ hostvars['localhost']['core_configuration'] }}"
+    workload_type: gsm8k_quality
+
+  pre_tasks:
+    - name: End play if in external mode
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['vllm_mode'] == 'external'
+
+  roles:
+    - role: vllm_server
+
+# ==============================================================================
+# STEP 4: Run GSM8K Multi-Turn Quality Evaluation (Controller)
+# ==============================================================================
+
+- name: "GSM8K Quality - Run Evaluation"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    test_run_id: "{{ hostvars['localhost']['test_run_id'] }}"
+    actual_model: "{{ hostvars['localhost']['actual_model'] }}"
+    core_configuration: "{{ hostvars['localhost']['core_configuration'] }}"
+    gsm8k_turns_mode: "{{ hostvars['localhost']['gsm8k_turns_mode'] }}"
+    vllm_mode: "{{ hostvars['localhost']['vllm_mode'] }}"
+    workload_type: gsm8k_quality
+    local_results_dir: "{{ hostvars['localhost']['local_results_base'] }}/{{ actual_model | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/{{ core_configuration.name }}"
+    quality_endpoint: "{{ vllm_endpoint.external.url if vllm_mode == 'external' else 'http://' + hostvars['dut']['ansible_host'] + ':' + (vllm_server.port | default(8000) | string) }}"
+
+  tasks:
+    - name: Ensure results directory exists
+      ansible.builtin.file:
+        path: "{{ local_results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Run evaluate_gsm8k_multiturn_quality.py
+      ansible.builtin.command:
+        cmd: >-
+          python3 {{ playbook_dir }}/../scripts/ansible/evaluate_gsm8k_multiturn_quality.py
+          --endpoint {{ quality_endpoint }}
+          --output-dir {{ local_results_dir }}
+          --model {{ actual_model }}
+          --turns-mode {{ gsm8k_turns_mode }}
+          --num-problems {{ gsm8k_num_problems | default(0) }}
+          --test-run-id {{ test_run_id }}
+          --cores {{ requested_cores | default(0) }}
+          {{ '--api-key ' + vllm_api_key if (vllm_api_key is defined and vllm_api_key | length > 0) else '' }}
+      environment:
+        HF_TOKEN: "{{ hf_token | default(lookup('env', 'HF_TOKEN')) }}"
+      register: quality_eval_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display quality evaluation output
+      ansible.builtin.debug:
+        msg: "{{ quality_eval_result.stdout_lines | default(['Quality evaluation produced no output']) }}"
+
+    - name: Fail if quality evaluation did not produce results
+      ansible.builtin.fail:
+        msg: >-
+          Quality evaluation exited with rc={{ quality_eval_result.rc }}.
+          Ensure the controller has: pip install datasets requests
+      when: quality_eval_result.rc != 0
+
+    - name: Read quality results
+      ansible.builtin.slurp:
+        src: "{{ local_results_dir }}/quality-results.json"
+      register: quality_results_raw
+
+    - name: Write test metadata
+      ansible.builtin.copy:
+        content: |
+          {
+            "test_run_id": "{{ test_run_id }}",
+            "config_type": "auto",
+            "benchmark": "gsm8k-multiturn-quality",
+            "core_config_name": "{{ core_configuration.name }}",
+            "core_count": {{ core_configuration.cores }},
+            "cpuset_cpus": "{{ core_configuration.cpuset_cpus }}",
+            "cpuset_mems": "{{ core_configuration.cpuset_mems }}",
+            "tensor_parallel": {{ core_configuration.tensor_parallel }},
+            "model": "{{ actual_model }}",
+            "model_source": "{{ hostvars['localhost']['model_source'] | default('specified') }}",
+            "workload": "{{ workload_type }}",
+            "turns_mode": "{{ gsm8k_turns_mode }}",
+            "platform": "{{ hostvars['localhost']['dut_platform_name'] | default('unknown') }}",
+            "vllm_mode": "{{ vllm_mode }}",
+            "vllm_endpoint_url": "{{ vllm_endpoint.external.url if vllm_mode == 'external' else 'n/a' }}",
+            "timestamp": "{{ lookup('pipe', 'date -Iseconds') }}"
+          }
+        dest: "{{ local_results_dir }}/test-metadata.json"
+
+    - name: Display results summary
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "✓ GSM8K multi-turn quality evaluation complete!"
+          - "Accuracy: {{ (quality_results_raw.content | b64decode | from_json).accuracy * 100 | round(1) }}%"
+          - "Turns mode: {{ gsm8k_turns_mode }}"
+          - "Results: {{ local_results_dir }}/quality-results.json"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ==============================================================================
+# STEP 5: Collect vLLM Logs (Managed Mode Only)
+# ==============================================================================
+
+- name: "GSM8K Quality - Collect Logs"
+  hosts: dut
+  become: true
+  gather_facts: false
+  vars:
+    test_run_id: "{{ hostvars['localhost']['test_run_id'] }}"
+    core_configuration: "{{ hostvars['localhost']['core_configuration'] }}"
+    workload_type: gsm8k_quality
+
+  pre_tasks:
+    - name: End play if in external mode
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost']['vllm_mode'] | default('managed') == 'external'
+
+  roles:
+    - role: results_collector
+      vars:
+        log_collection_dest: "{{ hostvars['localhost']['local_results_base'] }}/{{ hostvars['localhost']['actual_model'] | replace('/', '__') }}/{{ workload_type }}-{{ test_run_id }}/{{ core_configuration.name }}/"
+        journald_identifier: "vllm-{{ workload_type }}-{{ core_configuration.cores }}c-tp{{ core_configuration.tensor_parallel }}"
+        log_filename_prefix: "vllm-server"
+        journald_time_range: "2 hour ago"
+
+# ==============================================================================
+# STEP 6: Optional vLLM Container Cleanup (Managed Mode Only)
+# ==============================================================================
+
+- name: "GSM8K Quality - Optional Cleanup"
+  hosts: dut
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: End play if in external mode or cleanup disabled
+      ansible.builtin.meta: end_play
+      when: >-
+        hostvars['localhost']['vllm_mode'] | default('managed') == 'external' or
+        not (cleanup_after_test | default(false) | bool)
+
+  tasks:
+    - name: Stop and remove vLLM container
+      containers.podman.podman_container:
+        name: "{{ vllm_container_name }}"
+        state: absent
+
+    - name: Display cleanup status
+      ansible.builtin.debug:
+        msg: "✓ vLLM container stopped and removed"

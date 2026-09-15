@@ -81,6 +81,39 @@ test_configs:
       - "--block-size=128"              # CPU optimal: multiples of 32 for SIMD alignment (AVX2/AVX512/NEON)
     kv_cache_space: "10GiB"             # Fallback value - 256 total tokens (vs 1024 for chat)
 
+  # Multi-turn chat workload (synthetic conversations via GuideLLM multiturn)
+  # Each conversation replays model outputs as history across `turns` requests.
+  # Peak prompt length ~ prefix_tokens + turns*isl + (turns-1)*osl tokens.
+  chat_multiturn:
+    workload_type: "chat_multiturn"
+    isl: 256                            # Per-turn user message length
+    osl: 256                            # Per-turn assistant response length
+    variability: false
+    turns: 4                            # Conversation turns per session (override: guidellm_turns)
+    prefix_tokens: 512                  # System prompt (shared prefix) length
+    prefix_count: 10                    # Number of unique prefixes (cache diversity)
+    backend: "openai-chat"
+    vllm_args:
+      - "--dtype=auto"                  # Fallback dtype - overridden by model-specific dtype
+      - "--no-enable-prefix-caching"    # Baseline mode: no prefix caching (use vllm_caching_mode=production for multiturn+PC)
+      - "--max-model-len=4096"          # Final turn carries full history: ~2048 tokens + template overhead
+      - "--block-size=128"              # CPU optimal: multiples of 32 for SIMD alignment (AVX2/AVX512/NEON)
+    kv_cache_space: "40GiB"             # Fallback value - should be overridden by model-specific kv_cache_sizes
+
+  # GSM8K multi-turn quality workload (server config for accuracy evaluation)
+  gsm8k_quality:
+    workload_type: "gsm8k_quality"
+    isl: 512                            # Representative prompt length (GSM8K questions are short)
+    osl: 512                            # Representative CoT response length
+    variability: false
+    backend: "openai-chat"
+    vllm_args:
+      - "--dtype=auto"                  # Fallback dtype - overridden by model-specific dtype
+      - "--no-enable-prefix-caching"    # Baseline mode: no prefix caching
+      - "--max-model-len=4096"          # Multi-turn history: question + reasoning across turns
+      - "--block-size=128"              # CPU optimal: multiples of 32 for SIMD alignment (AVX2/AVX512/NEON)
+    kv_cache_space: "40GiB"             # Fallback value - should be overridden by model-specific kv_cache_sizes
+
   # RAG workload (very long input, medium output)
   rag:
     workload_type: "rag"

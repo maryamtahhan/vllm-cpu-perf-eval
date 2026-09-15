@@ -1,0 +1,11 @@
+name: gsm8k-quality
+description: GSM8K multi-turn accuracy evaluation (answer-forcing or guided-steps)
+runner: ansible
+target: gsm8k-quality.yml
+
+defaults:
+  gsm8k_turns_mode: answer-forcing
+
+param_mappings:
+  model: test_model
+  cores: requested_cores

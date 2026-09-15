@@ -28,6 +28,8 @@ Matrix-first CLI for running comprehensive CPU benchmarks. Most suites run full 
 # Single-shot suites (--model required)
 ./cpueval run --suite chat-smoke --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --cores 8
 ./cpueval run --suite concurrent-load --model meta-llama/Llama-3.2-1B-Instruct --cores 32
+./cpueval run --suite multiturn --model meta-llama/Llama-3.2-1B-Instruct --cores 32 --turns 4
+./cpueval run --suite gsm8k-quality --model meta-llama/Llama-3.2-1B-Instruct --cores 16
 
 # Explore
 ./cpueval list                    # Shows Matrix vs Single type

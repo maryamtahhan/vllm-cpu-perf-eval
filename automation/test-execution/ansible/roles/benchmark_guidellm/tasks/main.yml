@@ -17,6 +17,34 @@
     guidellm_cfg: "{{ benchmark_tool.guidellm }}"
     core_cfg: "{{ core_configuration }}"
 
+# ----------------------------------------------------------------------------
+# Multiturn (multi-turn conversation) data parameters
+# Flat overrides (guidellm_turns, guidellm_prefix_tokens, guidellm_prefix_count)
+# take precedence over workload-defined values (workload_cfg.turns, ...)
+# ----------------------------------------------------------------------------
+
+- name: Resolve multiturn data parameters
+  ansible.builtin.set_fact:
+    mt_turns: "{{ guidellm_turns | default(workload_cfg.turns | default(1)) | int }}"
+    mt_prefix_tokens: "{{ guidellm_prefix_tokens | default(workload_cfg.prefix_tokens | default(0)) | int }}"
+    mt_prefix_count: "{{ guidellm_prefix_count | default(workload_cfg.prefix_count | default(10)) | int }}"
+
+- name: Validate multiturn parameters
+  ansible.builtin.assert:
+    that:
+      - mt_turns >= 1
+      - mt_turns <= 32
+      - mt_prefix_tokens >= 0
+      - mt_prefix_count >= 1
+    fail_msg: >-
+      Invalid multiturn parameters: turns={{ mt_turns }},
+      prefix_tokens={{ mt_prefix_tokens }}, prefix_count={{ mt_prefix_count }}
+      (turns must be 1-32, prefix_tokens >= 0, prefix_count >= 1)
+
+- name: Set multiturn request format (chat messages array)
+  ansible.builtin.set_fact:
+    guidellm_request_format_arg: "{{ (mt_turns > 1) | ternary(',request_format=/v1/chat/completions', '') }}"
+
 - name: Parse guidellm_rate if provided as string (handles all formats)
   ansible.builtin.set_fact:
     guidellm_rate_parsed: "{{ guidellm_rate | regex_replace('[\\[\\] ]', '') | split(',') | map('int') | list }}"
@@ -95,6 +123,16 @@
     msg: "GuideLLM semver: {{ guidellm_semver | default('unknown') }} (v0.7+ CLI: {{ guidellm_semver is defined and guidellm_semver is version('0.7', '>=') }})"
   when: use_guidellm_container | bool
 
+- name: Validate multiturn support in containerized GuideLLM
+  ansible.builtin.fail:
+    msg: >-
+      Multi-turn benchmarking (turns>1) requires GuideLLM v0.6+ (synthetic data 'turns' param).
+      Current container: {{ guidellm_cfg.container_image }}
+  when:
+    - use_guidellm_container | bool
+    - mt_turns > 1
+    - guidellm_semver is version('0.6', '<')
+
 - name: Set model name for results path (prefer actual_model if available)
   ansible.builtin.set_fact:
     resolved_model: "{{ actual_model | default(test_model) }}"
@@ -126,6 +164,7 @@
       - "{{ 'API Key: Enabled' if (vllm_api_key is defined and vllm_api_key | length > 0) else 'API Key: Not configured' }}"
       - "Model/Processor: {{ processor_model }}"
       - "Workload: {{ workload_type }} (ISL:{{ workload_cfg.isl }}/OSL:{{ workload_cfg.osl }})"
+      - "{{ 'Multi-turn: ' + (mt_turns | string) ~ ' turns, prefix ' + (mt_prefix_tokens | string) ~ 'x' + (mt_prefix_count | string) ~ ' tokens (each turn counts as 1 request)' if mt_turns > 1 else 'Multi-turn: disabled (single-turn)' }}"
       - "Profile: {{ guidellm_cfg.profile }}"
       - "Rate: {{ 'N/A (synchronous)' if guidellm_cfg.profile == 'synchronous' else guidellm_cfg.rate | default([]) }}"
       - "Max Duration: {{ guidellm_cfg.max_seconds }}s"
@@ -154,6 +193,21 @@
   ansible.builtin.set_fact:
     guidellm_data_string: "prompt_tokens={{ workload_cfg.isl }},prompt_tokens_stdev={{ workload_cfg.isl_stdev }},prompt_tokens_min={{ workload_cfg.isl_min }},prompt_tokens_max={{ workload_cfg.isl_max }},output_tokens={{ workload_cfg.osl }},output_tokens_stdev={{ workload_cfg.osl_stdev }},output_tokens_min={{ workload_cfg.osl_min }},output_tokens_max={{ workload_cfg.osl_max }}"
   when: workload_cfg.variability | default(false) | bool
+
+- name: Append multiturn parameters to data string
+  ansible.builtin.set_fact:
+    guidellm_data_string: >-
+      {{ guidellm_data_string }},turns={{ mt_turns }},prefix_tokens={{ mt_prefix_tokens }},prefix_count={{ mt_prefix_count }}
+  when:
+    - mt_turns > 1
+    - mt_prefix_tokens > 0
+
+- name: Append multiturn turns to data string (no prefix)
+  ansible.builtin.set_fact:
+    guidellm_data_string: "{{ guidellm_data_string }},turns={{ mt_turns }}"
+  when:
+    - mt_turns > 1
+    - mt_prefix_tokens == 0
 
 # Build container name (shared by both v0.6.x and v0.7.x)
 - name: Build GuideLLM container name with actual NUMA configuration
@@ -247,6 +301,7 @@
       {%- if vllm_api_key is defined and vllm_api_key | length > 0 -%}
         ,api_key={{ vllm_api_key }}
       {%- endif -%}
+      {{ guidellm_request_format_arg | default('') }}
   no_log: true
   when:
     - use_guidellm_container | bool
@@ -588,6 +643,17 @@
     msg: "Detected guidellm version: {{ guidellm_major_minor | default('unknown') }}"
   when: not (use_guidellm_container | bool)
 
+- name: Validate multiturn support in host GuideLLM
+  ansible.builtin.fail:
+    msg: >-
+      Multi-turn benchmarking (turns>1) requires GuideLLM v0.6+ (synthetic data 'turns' param).
+      Detected host version: {{ guidellm_major_minor | default('unknown') }}
+  when:
+    - not (use_guidellm_container | bool)
+    - mt_turns > 1
+    - guidellm_major_minor is defined
+    - guidellm_major_minor is version('0.6', '<')
+
 - name: Set guidellm CLI prefix for v0.4-v0.6 (uses subcommands)
   ansible.builtin.set_fact:
     guidellm_cli_prefix: "guidellm benchmark run"
@@ -624,6 +690,7 @@
       {%- if vllm_api_key is defined and vllm_api_key | length > 0 -%}
         ,api_key={{ vllm_api_key }}
       {%- endif %}
+      {{ guidellm_request_format_arg | default('') }}
       --data kind=synthetic_text,{{ guidellm_data_string }}
       --tokenizer kind=huggingface_auto,model={{ processor_model }}
       --profile

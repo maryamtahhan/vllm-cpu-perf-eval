@@ -180,6 +180,17 @@ def run(
     num_prompts: Optional[int] = typer.Option(
         None, "--num-prompts", help="Prompt count (offline-batch run_test / baseline)"
     ),
+    turns: Optional[int] = typer.Option(
+        None, "--turns", help="Conversation turns for multiturn benchmarks (default: workload-defined)"
+    ),
+    turns_mode: Optional[str] = typer.Option(
+        None,
+        "--turns-mode",
+        help="GSM8K quality turns mode: answer-forcing or guided-steps",
+    ),
+    num_problems: Optional[int] = typer.Option(
+        None, "--num-problems", help="GSM8K problem count (quality suite; default: all in split)"
+    ),
     input_len: Optional[int] = typer.Option(
         None, "--input-len", help="Input token length (offline-batch random dataset)"
     ),
@@ -295,6 +306,21 @@ def run(
 
     if num_prompts is not None:
         cli_vars["num_prompts"] = num_prompts
+
+    if turns is not None:
+        if suite_obj.runner == "ansible":
+            cli_vars["guidellm_turns"] = turns
+        else:
+            cli_vars["turns"] = turns
+
+    if turns_mode:
+        if turns_mode not in ("answer-forcing", "guided-steps"):
+            console.print(f"[red]Invalid --turns-mode: {turns_mode} (must be answer-forcing or guided-steps)[/red]")
+            raise typer.Exit(1)
+        cli_vars["gsm8k_turns_mode"] = turns_mode
+
+    if num_problems is not None:
+        cli_vars["gsm8k_num_problems"] = num_problems
 
     if input_len is not None:
         cli_vars["input_len"] = input_len
