@@ -87,7 +87,8 @@ this repo is:
 
 **Problem:** Server throughput (`/metrics`) and socket energy (`denki`) live in different
 tools today — our Ansible play already scrapes vLLM into `vllm-metrics.json` on the
-controller, while RAPL must be read on the DUT host.
+controller, while RAPL must be read on the **same physical machine** that runs inference
+(not from inside the vLLM container, and not from the load-generator host).
 
 **What that work validated:** Point PCP's `pmdaopenmetrics` at vLLM's `/metrics` endpoint
 and log `openmetrics.vllm` in the **same archive** as `denki.rapl`, so `pmrep` can correlate
@@ -126,8 +127,9 @@ bring-up (§8).
   silicon energy.
 - Optional chassis power via Redfish/openmetrics when BMC is reachable and readings pass
   validation.
-- Make collection a **first-class toggle** (on/off/auto) across Ansible, `cpueval`, env,
-  and the PCP PMDA install state.
+- Run PCP/`pmlogger` in a **dedicated collector container** on the inference machine
+  (managed mode only) — **no `pcp` RPM install on the host OS** (see §5.10).
+- Make collection a **first-class toggle** (on/off/auto) across Ansible, `cpueval`, and env.
 - Emit power time-series + the four derived metrics into the existing results layout and
   the Streamlit dashboard when `power_mode: measured`.
 
@@ -139,7 +141,7 @@ bring-up (§8).
 - True at-wall energy at a hyperscaler (no rack/PDU access).
 - GPU/accelerator power (may be logged if `nvidia` PMDA exists; not part of CPU efficiency
   metrics in phase 1).
-- In-line meter / PDU / PowerSentry full-system energy (optional later phase).
+- In-line meter / PDU / PowerSentry at-wall energy, or site-wide PCPrecord-systemd policies.
 - Grafana dashboards or `pmproxy` for power (Streamlit only for this feature).
 
 ---
@@ -175,12 +177,13 @@ of on-prem vs AWS `.metal`. Otherwise collection is **off** — not estimated.
 
 ### 5.1 Capability probe + mode resolution
 
-Run once per benchmark play (before starting collectors); sets `power_mode` on the DUT and
-in `test-metadata.json`:
+Run once per benchmark play (before starting collectors), **inside the collector container**
+on the inference machine; sets `power_mode` and records it in `test-metadata.json`.
+Skipped when `vllm_mode == external` (§5.10):
 
 ```text
 1. collect_power == false                    -> off
-2. ensure pmdadenki installed (best-effort)  # the actual on/off at the collector
+2. pmdadenki available in collector image (not installed on host OS)
 3. probe:
      virt    = systemd-detect-virt          # "none" on real metal
      domains = pminfo --check denki (instances of denki.rapl.sysfs)
@@ -196,38 +199,37 @@ static — it may still run the collector for debugging, but derived metrics sta
 ### 5.2 Integration with a test run (Ansible / `cpueval`)
 
 Power collection follows the same **start → benchmark → stop → post-process** pattern as
-`vllm_metrics_collector`, but runs on the **DUT host** (RAPL/powercap is not visible inside
-the vLLM container).
+`vllm_metrics_collector`. RAPL is **not** visible inside the vLLM container; a separate
+**power collector container** on the `vllm` inventory host reads host `powercap` via mounts
+(§5.10). We do **not** install or configure PCP on the host operating system.
+
+**Not supported:** `vllm_mode: external` — the playbook does not manage the inference
+machine, so power collection is always `off` (latency/throughput metrics unchanged).
 
 **Timeline (managed mode, concurrent load — e.g. `llm-benchmark-auto.yml`):**
 
 ```text
-  localhost                          DUT (vllm group)              load_generator
-       |                                    |                            |
-       |-- detect power (power_collector) -->|                            |
-       |                                    |                            |
-       |-- start vLLM server -------------->|                            |
-       |-- start vllm_metrics (localhost) -->(scrapes /metrics)           |
-       |-- start pmlogger archive --------->|  (denki + openmetrics.vllm)|
-       |                                    |                            |
-       |                                    |<----- GuideLLM benchmark ---|
-       |                                    |                            |
-       |-- stop pmlogger ------------------>|                            |
-       |-- stop vllm_metrics (localhost) ---|                            |
-       |<-- fetch results dir --------------------------------------------|
-       |-- extract_benchmark_timings ------>|  (benchmarks.json)         |
-       |-- pmlogextract / compute --------->|  -> power-samples.json     |
-       |                                    |     power-metrics.json      |
+  localhost                    inference host (vllm group)              load_generator
+       |                                |                                    |
+       |-- start vLLM container -------->|                                    |
+       |-- start power collector ctr --->|  pmlogger (denki + openmetrics)    |
+       |-- start vllm_metrics (local) ---|-- scrape /metrics (HTTP)          |
+       |                                |<----------- GuideLLM benchmark -----|
+       |-- stop power collector ctr ---->|  archive -> volume bind           |
+       |-- stop vllm_metrics ------------|                                    |
+       |<-- fetch results dir -------------------------------------------------|
+       |-- extract_benchmark_timings ----- (benchmarks.json)                  |
+       |-- compute power metrics --------- power-samples.json, power-metrics.json
 ```
 
 | Step | When | Actor | Output |
 | --- | --- | --- | --- |
-| Probe | Pre-benchmark, after DUT facts | `power_collector` `detect.yml` on DUT | `power_mode` fact |
-| Start archive | After vLLM is healthy, **before** GuideLLM (same hook as `start-vllm-metrics-collection.yml`) | DUT | `results/.../pcp/<test_run_id>/` archive dir |
-| Benchmark | Existing playbooks | load_generator + DUT | `benchmarks.json`, timings |
-| Stop archive | `post_tasks` after benchmark (parallel to `stop-vllm-metrics-collection.yml`) | DUT | Closed archive |
-| Extract timings | **Collect-results play**, after `benchmarks.json` is on disk | localhost | `test-metadata.json` ← `benchmark_timings` via `extract_benchmark_timings.py` |
-| Extract + derive | **After** timings step (same play) | DUT or localhost | `power-samples.json`, `power-metrics.json` |
+| Probe | Pre-benchmark; managed mode only | `power_collector` exec in collector container | `power_mode` fact |
+| Start collector | After vLLM healthy, before GuideLLM | Podman on `vllm` host | Archive under mounted results path |
+| Benchmark | Existing playbooks | load_generator + inference host | `benchmarks.json`, timings |
+| Stop collector | `post_tasks` after benchmark | Podman on `vllm` host | Closed archive on results volume |
+| Extract timings | Collect-results play | localhost | `benchmark_timings` in `test-metadata.json` |
+| Extract + derive | After timings step | localhost or one-shot container exec | `power-samples.json`, `power-metrics.json` |
 | Metadata merge | Collect-results / packaging | existing tasks | `test-metadata.json` `power` block |
 
 **Hooks (proposed files):**
@@ -236,8 +238,8 @@ the vLLM container).
 - `automation/test-execution/ansible/tasks/stop-power-collection.yml`
 
 Included from `llm-benchmark-auto.yml`, offline-batch suite plays, and other benchmarks when
-`collect_power` is `auto` or `true`. Skipped entirely when probe yields `off` (no archive,
-no empty placeholder metrics).
+`vllm_mode == managed` and `collect_power` is `auto` or `true`. Skipped when external mode,
+when probe yields `off`, or when `collect_power=false` (no archive, no placeholder metrics).
 
 **Offline / bounded workloads:** The benchmark command runs on the DUT (or wraps the whole
 suite). Option A — PCP window only (same as server case). Option B — wrap the command with
@@ -259,8 +261,9 @@ present; charts mean power and energy/token vs config; shows a clear banner when
 
 ### 5.3 Continuous collection with PCP (source of record)
 
-- Configure `pmdaopenmetrics` with `vllm.url` → `http://127.0.0.1:{{ vllm_port }}/metrics`
-  when vLLM serves metrics on the DUT.
+- Inside the collector container, configure `pmdaopenmetrics` with `vllm.url` pointing at
+  the vLLM metrics URL reachable on the container network (e.g. host-published port or
+  shared pod network — same reachability rules as §5.10).
 - Start a **`pmlogger` archive scoped to the run** capturing `denki.rapl.sysfs`,
   `denki.rapl.msr` (when available), `openmetrics.vllm`, and `pmdalinux` util/frequency, at
   **1 s** for `openmetrics.vllm` where the role's `pmlogger` profile enables it.
@@ -271,8 +274,9 @@ present; charts mean power and energy/token vs config; shows a clear banner when
 
 ### 5.4 Per-run energy with JouleIT (bounded workloads + validation)
 
-- For workloads whose **process lifetime equals the measurement window**, wrap with
-  JouleIT: `sudo jouleit.sh -b -s <sockets> <cmd>` → energy (J) for CPU/DRAM over that run.
+- For workloads whose **process lifetime equals the measurement window**, optional JouleIT
+  wrap inside the collector container (same image or tooling volume) —
+  `jouleit.sh -b -s <sockets> <cmd>` → energy (J) for CPU/DRAM over that run.
 - For the **server + external-client** case, use the PCP time-window method (§5.5). Optionally
   compare JouleIT session totals to PCP-integrated energy on calibration hosts.
 - JouleIT is **not** used to synthesize power on hosts without RAPL.
@@ -339,15 +343,16 @@ Mirrors `vllm_metrics_collector` lifecycle:
 
 ```text
 automation/test-execution/ansible/roles/power_collector/
-  defaults/main.yml   # collect_power, sampler, sockets, pue, price_per_kwh
-  tasks/detect.yml    # probe -> power_mode
-  tasks/start.yml     # pmdadenki + openmetrics vllm.url + pmlogger archive
-  tasks/stop.yml      # stop archive; pmlogextract -> power-samples.json
+  defaults/main.yml   # collect_power, image, mounts, sockets, pue, price_per_kwh
+  tasks/detect.yml    # start probe container / exec -> power_mode
+  tasks/start.yml     # start collector container; pmlogger archive on results volume
+  tasks/stop.yml      # stop container; pmlogextract -> power-samples.json
   tasks/compute.yml   # derive four metrics -> power-metrics.json + metadata block
 ```
 
-Runs on the **host**, not inside the vLLM container (RAPL/powercap must be readable).
-Hooks slot in beside `tasks/start-vllm-metrics-collection.yml` / `stop-...`.
+Ansible on the **`vllm` group host** starts/stops the collector container (Podman, same as
+vLLM). PCP runs **only inside that container**, not on the host OS and not in the vLLM
+server container. Hooks slot in beside `tasks/start-vllm-metrics-collection.yml` / `stop-...`.
 
 ### 5.8 Attribution & topology (per-core power is not available)
 
@@ -389,36 +394,56 @@ the user, not gates the tool enforces.
 | Output-only variants | Optional derived field `energy_per_output_token` (J / generated tokens only) for reporting; default headline metric remains **all tokens processed** in the load window. |
 | Zero tokens | If `tokens == 0` in a window, skip efficiency metrics for that window and record `energy_only: true` for that slice. |
 
-### 5.10 Deployment: external vLLM, containers, and where power runs
+### 5.10 Deployment: managed vs external, collector sidecar
 
-| Mode | Where `pmlogger` runs | `power_mode` |
+| `vllm_mode` | Power collection | `power_mode` |
 | --- | --- | --- |
-| **Managed** (vLLM on `vllm` / DUT host) | DUT host alongside containerized vLLM | `measured` if probe passes on DUT |
-| **External** (vLLM on another endpoint) | On the host that runs inference **only if** that host is in inventory and probed | `measured` on inference host; loadgen host never used for RAPL |
-| **External** and inference host not managed by playbook | No collection | `off` (no inference on DUT) |
+| **Managed** | Power collector **sidecar** when `collect_power` auto/true | `measured` if RAPL probe passes |
+| **External** | None — role not invoked | **`off`** always |
 
-Inventory hook (proposed): `power_collection_host` defaults to the `vllm` group first host;
-override when external URL resolves to a known bare-metal host in inventory.
+External runs still collect GuideLLM + optional `vllm-metrics.json` from `/metrics` when
+exposed; they never claim energy or J/token.
 
-**Container / URL binding (managed mode):** RAPL is read on the **host**. `pmdaopenmetrics`
-`vllm.url` must target a URL reachable from the host's `pmcd` — typically
-`http://127.0.0.1:{{ published_host_port }}/metrics`, not an in-container-only address.
-Confirm port publishing matches `bench_config.vllm_port` (same assumption as
-`start-vllm-metrics-collection.yml` for localhost scrape).
+**Power collector sidecar (managed mode only)**
+
+| Concern | Approach |
+| --- | --- |
+| Image | Dedicated `power-collector` image (PCP + `pmdadenki` + `pmdaopenmetrics` + `pmlogger`/`pmrep` preconfigured). Version-pinned like `VLLM_CONTAINER_IMAGE`. |
+| Runtime | Podman on `vllm` host (`containers.podman.podman_container`), lifecycle parallel to vLLM container. |
+| RAPL access | Bind-mount host `/sys/class/powercap` (read-only). MSR path (`denki.rapl.msr`) needs `/dev/cpu` or `cap_sys_rawio` + privileged — **optional**; default metrics use sysfs package/dram. |
+| Results | Bind-mount the same host path used for benchmark `results_path` so archives and JSON land in the run directory. |
+| vLLM `/metrics` | `pmdaopenmetrics` `vllm.url` uses a URL reachable **from inside the collector container** — e.g. `http://host.containers.internal:{{ vllm_port }}/metrics` or host network mode if required (match however vLLM publishes port today). |
+| Host OS | **No** `dnf install pcp`, no `pmdadenki` Install on `$PCP_PMDAS_DIR` on the host. |
+
+```text
+  inference host (podman)
+  ┌─────────────────────┐     ┌───────────────────────────┐
+  │ vLLM container      │     │ power-collector container │
+  │ (inference only)    │     │ pmcd + pmlogger + denki   │
+  └──────────┬──────────┘     │ mounts: powercap, results │
+             │ published      └─────────────┬─────────────┘
+             │         /metrics scrape ─────┘ (openmetrics)
+             └──────────────────────────────────────────────► host powercap (RAPL)
+```
 
 ### 5.11 Prerequisites, privileges, and failure behavior
 
-**Prerequisites on the collection host**
+**Prerequisites on the `vllm` host (managed mode)**
 
-- `pcp` package installed; **`pmcd` running** (enable/start via Ansible if missing).
-- `pmdadenki` installed under `$PCP_PMDAS_DIR/denki` when probe expects measured mode.
-- Optional: `pmdaopenmetrics` with `config.d/vllm.url` when `power_log_openmetrics_vllm`.
+- Podman (already required for managed vLLM).
+- Collector image pulled or built once (`power_collector_image`).
+- Bare-metal (or metal with live RAPL) — same probe rules as §4.
+
+**Inside the collector container**
+
+- `pmcd` + `pmlogger` started by container entrypoint for the run window.
+- `pmdadenki` / `pmdaopenmetrics` baked into the image (not installed at playbook time on the host).
 
 **Privileges**
 
-- Host tasks use `become: true` where needed to install PMDAs, read MSR-backed `denki.rapl.msr`,
-  and run JouleIT (`sudo jouleit.sh`).
-- BMC/Redfish credentials via Ansible vault vars — never written into result JSON.
+- Collector container runs **`privileged: true`** (or minimal cap set documented in the
+  role) so sysfs energy counters are readable; vLLM container stays unprivileged.
+- BMC/Redfish (optional) configured via env/vault in the collector container — never in result JSON.
 
 **Probe / toggle behavior**
 
@@ -451,7 +476,7 @@ Confirm port publishing matches `bench_config.vllm_port` (same assumption as
 | Path | Collector | Interval | Role for power |
 | --- | --- | --- | --- |
 | `vllm-metrics.json` | `vllm_metrics_collector` on localhost → HTTP scrape | ~10 s | Existing Streamlit/server analysis; token cross-check |
-| `openmetrics.vllm` in PCP archive | `pmdaopenmetrics` on DUT | 1 s | **Time-aligned** with `denki.rapl` in one archive for `pmrep` / audits |
+| `openmetrics.vllm` in PCP archive | `pmdaopenmetrics` in collector container | 1 s | **Time-aligned** with `denki.rapl` in one archive for `pmrep` / audits |
 
 Headline throughput/latency remain from GuideLLM + `vllm-metrics.json`. PCP openmetrics is
 the source of record for **correlating watts with server counters** in post-mortem archive
@@ -553,7 +578,7 @@ When `power_mode` is `off`, include a minimal block:
 | Ansible extra-var | `-e collect_power=true` (values: auto / true / false) |
 | `cpueval` CLI / suite yaml | `--collect-power` / a `collect_power:` field |
 | Environment | `CPUEVAL_COLLECT_POWER` = auto / true / false |
-| Collector-level | `pmdadenki Install` / `Remove` (`$PCP_PMDAS_DIR/denki`) |
+| Image tag | `POWER_COLLECTOR_IMAGE` / `power_collector_image` Ansible var |
 
 `auto` (default) runs the probe in §5.1. On AWS and other non-RAPL targets, `auto` yields
 `off` with no derived power fields.
@@ -562,17 +587,16 @@ When `power_mode` is `off`, include a minimal block:
 
 ## 7. Packaging / availability
 
-| Component | Where it comes from | Notes |
+| Component | Where it lives | Notes |
 | --- | --- | --- |
-| PCP (`pmcd`, `pmlogger`, `pmrep`) | RHEL **base** (`pcp`; optionally `pcp-zeroconf`) | Red Hat supported |
-| `pmdadenki` (RAPL energy) | part of PCP ≥ ~6.0 | **verify RHEL-bundled PCP ships it**; RHEL 9's may predate it — may need a newer `pcp` build (this checkout is 7.2.2) |
-| `pmdaopenmetrics` | part of PCP | vLLM `/metrics` URL file under `config.d/` |
-| `pmdaperfevent` RAPL (Intel) | part of PCP | Intel only; config `<RAPL>` events |
-| JouleIT (powerapi-ng) | git clone; conda/pip deps (`denki`/HWInfo, `hwloc`) | not an RPM |
-| Redfish/BMC power | no RPM — `python-redfish` / `curl`, or RFchassis openmetrics | whole-chassis watts; bare metal only; validate vs RAPL |
+| **Power collector container image** | Built in-repo (Containerfile) or pulled from registry | Bundles PCP ≥ version with `pmdadenki` + `pmdaopenmetrics`; pin in CI |
+| PCP (`pmcd`, `pmlogger`, `pmrep`) | Inside collector image only | Not installed on host OS |
+| `pmdadenki` (RAPL energy) | Inside collector image | Validate on target CPU during image bring-up (§8) |
+| `pmdaperfevent` RAPL (Intel) | Optional in image | Intel only |
+| JouleIT (powerapi-ng) | Optional layer in collector image | Offline-batch cross-check only |
+| Redfish/BMC power | Optional in collector image | whole-chassis; validate vs RAPL |
 
-The `cpueval` installer already bootstraps a venv + dnf; JouleIT's conda/pip deps fit that
-pattern.
+Host needs Podman only; no `pcp` RPM on the inference machine.
 
 ---
 
@@ -610,16 +634,15 @@ pattern.
 
 ## 10. Deliverables / phases
 
-- **Phase 1 (this proposal):** capability probe + `power_collector` role using PCP
-  `pmdadenki` + run-scoped `pmlogger` (with `openmetrics.vllm` when metrics are enabled),
+- **Phase 1 (this proposal):** `power-collector` container image + `power_collector` role
+  (Podman sidecar, no host PCP) with `pmdadenki` + run-scoped `pmlogger` (with
+  `openmetrics.vllm` when metrics are enabled), managed mode only;
   JouleIT wrapper for offline-batch optional validation, the four metrics when measured,
   toggle across Ansible/CLI/env, Streamlit Power & Energy page (§5.16), MLflow fields when
   measured (§5.15), collect-results pipeline ordering (§5.5), attribution limitation
   documented on results (§5.8).
 - **Phase 2:** multi-socket/NUMA attribution polish; reproducibility pinning (`tuned`,
   governor); optional RFchassis with automated sanity checks vs RAPL.
-- **Phase 3 (optional):** PowerSentry / PDU for true at-wall energy; deeper PCPrecord-systemd
-  alignment for site-wide recording policies.
 
 ---
 
@@ -638,7 +661,8 @@ power_price_per_kwh: null           # required to emit $/1M tokens
 power_redfish: false                # also collect BMC system power via openmetrics/Redfish
 power_redfish_endpoint: null        # validated against denki when enabled
 power_retain_pcp_archive: true      # keep pmlogger archive under results for pmrep audits
-power_collection_host: null         # default: first host in vllm group; override for external inference host
+power_collector_image: null         # default: built tag from automation/test-execution/containers/power-collector
+power_collector_privileged: true    # required for RAPL sysfs; tighten in Phase 2 if possible
 power_token_mismatch_tolerance_pct: 2.0
 ```
 
@@ -655,7 +679,7 @@ power_token_mismatch_tolerance_pct: 2.0
   `openmetrics.vllm` when vLLM metrics are enabled; host-reachable `vllm.url` in container mode.
 - EPYC probe: verify AMD package (and dram) instances per §8.1.
 - Cloud smoke: probe reports `off`; metadata `power.power_mode: off` — never fake `measured`.
-- External mode: power on inference host when inventoried; `off` when only client metrics exist.
+- External mode: `power_collector` skipped; `power_mode: off` in metadata.
 - Failure: killed `pmlogger` mid-run → benchmark still succeeds; metadata records error.
 - `collect_power=true` on host without RAPL → warning, benchmark continues.
 - Attribution: separate-host run yields `measured`; same-host same-socket co-location is
@@ -671,12 +695,13 @@ power_token_mismatch_tolerance_pct: 2.0
 1. Default `power_backend` for online runs — PCP-only, or PCP continuous + JouleIT-on-batch?
 2. Default `power_pue` / `price_per_kwh` source (per-datacenter config vs per-run override)?
 3. `denki.rapl.msr` (psys) vs `denki.rapl.sysfs` (package+dram) as the reported default.
-4. Ship our own pinned PCP build (to guarantee `pmdadenki` + EPYC support) or require an OS
-   `pcp` version?
-5. Retain full PCP archives in every result tarball vs extract-only (`power_retain_pcp_archive`).
-6. Same-host same-socket co-location — **resolved: documented as a limitation (§5.8), not
+4. Collector image base (UBI + pinned `pcp` RPM) vs multi-stage copy from host — image must
+   ship `pmdadenki` + EPYC validation (§8).
+5. Minimum container caps: is `privileged` required on all platforms or sysfs-only mount enough?
+6. Retain full PCP archives in every result tarball vs extract-only (`power_retain_pcp_archive`).
+7. Same-host same-socket co-location — **resolved: documented as a limitation (§5.8), not
    enforced**; results record the per-socket/all-socket scope rather than being blocked.
-7. Shared Python module for window extraction — import from `extract_benchmark_timings.py`
+8. Shared Python module for window extraction — import from `extract_benchmark_timings.py`
    vs duplicate logic inside `compute.yml` helper script.
 
 ---
