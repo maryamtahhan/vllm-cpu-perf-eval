@@ -163,7 +163,7 @@ either returns incrementing instances or it does not. JouleIT likewise aborts wh
 domain is present. **Measured power is reported only when counters exist and tick**, regardless
 of on-prem vs AWS `.metal`. Otherwise collection is **off** — not estimated.
 
-| Target | `systemd-detect-virt` | `pminfo denki.rapl.sysfs` ticks? | Resulting mode |
+| Target | `host_virt` (see §5.1) | `denki.rapl.sysfs` ticks? | Resulting mode |
 | --- | --- | --- | --- |
 | On-prem Xeon 6 / EPYC | `none` | yes | `measured` |
 | AWS `.metal` x86 (counters tick) | `none` | yes | `measured` |
@@ -182,15 +182,21 @@ on the inference machine; sets `power_mode` and records it in `test-metadata.jso
 Skipped when `vllm_mode == external` (§5.10):
 
 ```text
-1. collect_power == false                    -> off
-2. pmdadenki available in collector image (not installed on host OS)
-3. probe:
-     virt    = systemd-detect-virt          # "none" on real metal
-     domains = pminfo --check denki (instances of denki.rapl.sysfs)
-     live    = denki.rapl.sysfs increments during a ~200 ms busy spin
-4. if domains and live                      -> measured
-   else                                      -> off   (+ warning in playbook log)
+1. collect_power == false                         -> off
+2. pmdadenki available in collector image (not on host OS)
+3. host_virt = systemd-detect-virt on inference host (Ansible fact, outside sidecar)
+   container_virt = optional systemd-detect-virt inside collector (record only; not used for mode)
+4. enumerate configured sysfs metrics (default: denki.rapl.sysfs):
+     pminfo -f denki.rapl.sysfs  # instances present
+     live = package instance J increases over ~200 ms busy spin in collector
+5. if host_virt allows RAPL path and instances and live -> measured
+   else                                               -> off (+ warning)
 ```
+
+**Metric source (Phase 1 default):** `power_pcp_metrics` defaults to **`denki.rapl.sysfs` only**.
+`denki.rapl.msr` / `psys` is opt-in (extra caps/devices); probe and `compute.yml` use only
+metrics listed in `power_pcp_metrics`. Measured mode requires every configured sysfs domain
+needed for reporting to pass the live check.
 
 `power_force_measured=true` is **not** supported for emitting numbers when counters are
 static — it may still run the collector for debugging, but derived metrics stay absent and
@@ -264,8 +270,8 @@ present; charts mean power and energy/token vs config; shows a clear banner when
 - Inside the collector container, configure `pmdaopenmetrics` with `vllm.url` pointing at
   the vLLM metrics URL reachable on the container network (e.g. host-published port or
   shared pod network — same reachability rules as §5.10).
-- Start a **`pmlogger` archive scoped to the run** capturing `denki.rapl.sysfs`,
-  `denki.rapl.msr` (when available), `openmetrics.vllm`, and `pmdalinux` util/frequency, at
+- Start a **`pmlogger` archive scoped to the run** capturing metrics in `power_pcp_metrics`
+  (default `denki.rapl.sysfs`), optional `openmetrics.vllm`, and `pmdalinux` util/frequency, at
   **1 s** for `openmetrics.vllm` where the role's `pmlogger` profile enables it.
 - After the run, `pmlogextract`/`pmrep` over the archive produce `power-samples.json`
   (timestamped consistently with `vllm-metrics.json`), one series per domain per socket.
@@ -293,6 +299,11 @@ window_start = benchmark.start_time + benchmark.warmup_duration
 window_end   = benchmark.end_time   - benchmark.cooldown_duration
 ```
 
+**Window validation (before integrating E or Δt):** require `warmup_duration >= 0`,
+`cooldown_duration >= 0`, and `window_start < window_end`. If not, skip that
+`benchmark_index`, set `per_benchmark[].window_valid: false` with `window_skip_reason`, and
+do not include it in roll-up efficiency metrics.
+
 Use the same fields as `extract_benchmark_timings.py` reads from `benchmarks.json`
 (`warmup_duration`, `cooldown_duration`, `start_time`, `end_time`). Do **not** assume a
 fixed 30 s warmup — durations are per benchmark and come from GuideLLM config.
@@ -315,22 +326,47 @@ recording the all-socket total, so a tp1 run is not charged an idle socket's ene
 
 ### 5.6 Deriving the four metrics
 
-Only when `power_mode == measured`. Join energy over the window (E), mean power (P̄),
-window Δt, and token totals (`prompt + generation` from `vllm-metrics.json` /
-`benchmarks.json`):
+**Eligibility:** Top-level `power_mode: measured` only when the probe passed **and** every
+requested benchmark window is `window_valid` with complete PCP samples for its interval
+(§5.11). Otherwise `power_mode: off` or omit summary derived fields; per-window rows may
+still carry `energy_joules` with `data_complete: false`.
+
+**Domain energy (no double counting):** For each socket, integrate **one** primary silicon
+total for headline metrics:
+
+| Vendor | Include in socket total E | Do not sum together |
+| --- | --- | --- |
+| Intel (sysfs) | `package` energy per socket | `package` + `core` / `uncore` (children overlap package) |
+| Intel (optional) | Report `dram` separately; add to E only when `sut_boundary` includes DRAM | `package` + `dram` both in E only when boundary says package+dram |
+| AMD (sysfs) | `package` + `dram` when both instances exist | `package` + `core` |
+
+Store per-domain J in `domains` for audit; roll-up E uses the non-overlapping rule above.
+
+Join E, mean power (P̄), window Δt, and tokens (§5.9) for each complete window:
 
 ```text
 Mean Power (W)   = E / Δt
 Energy/token     = E / tokens                       # J/token
 Tokens/W         = 1 / (energy_per_token)           # token/J
 $/1M tokens      = (energy_per_token * 1e6 / 3.6e6) * PUE * price_per_kwh
-                   (+ optional amortized hardware: hw_cost_per_hr / tokens_per_hr)
 ```
 
-**Cost metric:** Emit `cost_per_million_tokens_usd` only when `power_price_per_kwh` is set;
-otherwise omit the field (or set JSON `null`) — never invent a tariff. Default `power_pue:
-1.0` means **at-silicon** energy only; values `> 1` apply when reporting at-facility /
-at-wall cost on top of measured socket energy.
+**Optional hardware amortization (separate from energy cost):**
+
+```text
+hw_cost_per_million_tokens_usd = (hw_cost_per_hr / tokens_per_hr) * 1e6
+```
+
+Do not add this term inside the energy-based `$/1M tokens` formula unless explicitly
+combined in a downstream cost report.
+
+**Config validation (before cost metrics):** `power_pue` must be finite and `>= 1.0`.
+When `power_price_per_kwh` is set, it must be finite and `>= 0`; otherwise skip
+`cost_per_million_tokens_usd`. When unset, omit cost fields (JSON `null`).
+
+**Cost metric:** Emit `cost_per_million_tokens_usd` only when price validation passes.
+Default `power_pue: 1.0` is at-silicon energy; values `> 1` apply facility PUE on the
+energy term only.
 
 Output: `power-metrics.json` per run, plus a `power` block in `test-metadata.json`
 recording `power_mode` (`measured` / `off`), backend used (`pcp-denki` / `pcp-perfevent` /
@@ -389,7 +425,7 @@ the user, not gates the tool enforces.
 
 | Rule | Detail |
 | --- | --- |
-| Primary token count | **Client-observed** totals from `benchmarks.json` for the same window: sum of prompt + generation tokens completed in that benchmark step (GuideLLM scheduler), matched to `benchmark_index` / rate. |
+| Primary token count | Tokens counted over the **same** `[window_start, window_end)` as energy (§5.5). Use GuideLLM fields that are scoped to the load phase only; if `benchmarks.json` only provides whole-step totals that include warmup/cooldown, do **not** compute `energy_per_token_j` for that index — set `token_window_mismatch: true` and emit energy-only for that slice. |
 | Cross-check | When `vllm-metrics.json` is present, log server-side token counters for the overlapping interval; if client vs server totals diverge by more than a configured tolerance (e.g. 2%), set `power_metrics.token_source: client` and add `token_count_warning` in metadata — do **not** silently switch denominators. |
 | Output-only variants | Optional derived field `energy_per_output_token` (J / generated tokens only) for reporting; default headline metric remains **all tokens processed** in the load window. |
 | Zero tokens | If `tokens == 0` in a window, skip efficiency metrics for that window and record `energy_only: true` for that slice. |
@@ -410,7 +446,9 @@ exposed; they never claim energy or J/token.
 | --- | --- |
 | Image | Dedicated `power-collector` image (PCP + `pmdadenki` + `pmdaopenmetrics` + `pmlogger`/`pmrep` preconfigured). Version-pinned like `VLLM_CONTAINER_IMAGE`. |
 | Runtime | Podman on `vllm` host (`containers.podman.podman_container`), lifecycle parallel to vLLM container. |
-| RAPL access | Bind-mount host `/sys/class/powercap` (read-only). MSR path (`denki.rapl.msr`) needs `/dev/cpu` or `cap_sys_rawio` + privileged — **optional**; default metrics use sysfs package/dram. |
+| RAPL access | Read-only bind-mount `/sys/class/powercap`. Optional MSR metrics: add `/dev/cpu` only when `power_pcp_metrics` includes `denki.rapl.msr`. |
+| Security default | **Restricted:** read-only mounts, no host PID namespace, network only to vLLM `/metrics` (+ optional BMC). `CAP_SYS_ADMIN` not required for sysfs-only. `power_collector_privileged: false` by default. |
+| Privileged exception | Set `power_collector_privileged: true` only when MSR or driver quirks require it; document in run metadata. |
 | Results | Bind-mount the same host path used for benchmark `results_path` so archives and JSON land in the run directory. |
 | vLLM `/metrics` | `pmdaopenmetrics` `vllm.url` uses a URL reachable **from inside the collector container** — e.g. `http://host.containers.internal:{{ vllm_port }}/metrics` or host network mode if required (match however vLLM publishes port today). |
 | Host OS | **No** `dnf install pcp`, no `pmdadenki` Install on `$PCP_PMDAS_DIR` on the host. |
@@ -441,9 +479,8 @@ exposed; they never claim energy or J/token.
 
 **Privileges**
 
-- Collector container runs **`privileged: true`** (or minimal cap set documented in the
-  role) so sysfs energy counters are readable; vLLM container stays unprivileged.
-- BMC/Redfish (optional) configured via env/vault in the collector container — never in result JSON.
+- Collector uses the **restricted profile** in the sidecar table (§5.10); vLLM stays
+  unprivileged. BMC/Redfish via env/vault — never in result JSON.
 
 **Probe / toggle behavior**
 
@@ -455,9 +492,11 @@ exposed; they never claim energy or J/token.
 
 **Collector failures mid-run**
 
-- If `pmlogger` stops unexpectedly: log error, close partial archive if possible, set
-  `power_collection_error` in metadata, omit or partial-fill `power-metrics.json`; **do not**
-  fail the benchmark play.
+- If `pmlogger` stops unexpectedly or any window lacks reconstructable samples: log error,
+  set `power_collection_error` in metadata, save partial archive if possible, and set
+  **`power_mode: off`** (or omit all summary derived metrics). Per-window entries may include
+  partial `energy_joules` with `data_complete: false`. **Never** publish top-level
+  `power_mode: measured` with incomplete roll-ups. **Do not** fail the benchmark play.
 - Benchmark failure: still stop `pmlogger` in `always` block to avoid orphaned archives.
 
 ### 5.12 Playbook and workload coverage (Phase 1)
@@ -484,12 +523,17 @@ review, not a replacement for the JSON scrape.
 
 ### 5.14 Time alignment and clocks
 
-- GuideLLM `start_time` / `end_time` are ISO-8601 timestamps; PCP archive uses epoch seconds
-  in extracted `power-samples.json`. Conversion must be explicit (UTC).
-- **NTP/chrony** on DUT and load generator is recommended; large skew (> few seconds) should
-  set `power_clock_warning` in metadata.
-- `pmlogger` start/stop should bracket the full multi-rate sweep (from first benchmark window
-  start through last window end), not only a single rate step.
+- GuideLLM `start_time` / `end_time` are ISO-8601 (load generator clock); PCP uses epoch
+  seconds on the inference host. All conversions explicit (UTC).
+- **Before integrating energy for a window:** `compute.yml` estimates clock offset between
+  load_generator and `vllm` host (e.g. compare first benchmark `start_time` to archive
+  start, bounded by `power_clock_max_skew_s`, default 2). Apply offset when mapping windows
+  to PCP samples.
+- If skew exceeds the bound: mark affected `per_benchmark` rows `clock_aligned: false`, skip
+  derived metrics for those indices, and set `power_clock_error` in metadata. A warning alone
+  is **not** sufficient to compute J/token on misaligned windows.
+- `pmlogger` brackets the full multi-rate sweep (first `window_start` through last
+  `window_end`).
 
 ### 5.15 MLflow (Phase 1 scope)
 
@@ -558,7 +602,7 @@ per-rate metrics keyed by `benchmark_index` / concurrency.
     "domains": ["denki.rapl.sysfs"],
     "pue": 1.0,
     "price_per_kwh": null,
-    "probe": { "virt": "none", "denki_live": true }
+    "probe": { "host_virt": "none", "container_virt": "kvm", "denki_live": true }
   }
 }
 ```
@@ -607,9 +651,11 @@ Host needs Podman only; no `pcp` RPM on the inference machine.
    `intel-rapl*`, EPYC needs a newer PCP or a small PMDA tweak.
 2. **RHEL PCP version** — confirm the distro `pcp` includes `pmdadenki` and `pmdaopenmetrics`;
    otherwise pin a build.
-3. **Sampling resolution** — set pmlogger interval to 1 s; for runs longer than ~24 h at
-   1 Hz, verify RAPL counter wrap / reset handling in `compute.yml` (32-bit energy counters
-   on some domains).
+3. **Sampling resolution & RAPL deltas (Phase 1 requirement for `compute.yml`):** 1 s
+   `pmlogger` interval; integrate energy with **modular 32-bit wrap** on counter deltas;
+   treat unexpected decreases (reset, rebind, gap) as invalid intervals — skip or mark
+   `data_complete: false` so mean power never goes negative; do not emit measured roll-ups
+   built from invalid intervals.
 4. `psys` availability on the target Xeon 6 (MSR path).
 5. **Redfish / RFchassis** — confirm BMC exposes usable power metrics; compare archive
    `openmetrics.RFchassis` to `denki.rapl` (reject or flag outliers).
@@ -651,7 +697,7 @@ Host needs Podman only; no `pcp` RPM on the inference machine.
 ```yaml
 collect_power: auto                 # auto | true | false
 power_backend: pcp                  # pcp | jouleit | pcp+jouleit
-power_pcp_metrics: [denki.rapl.sysfs, denki.rapl.msr]
+power_pcp_metrics: [denki.rapl.sysfs]   # append denki.rapl.msr only with MSR caps/mounts
 power_pcp_interval_s: 1
 power_log_openmetrics_vllm: true    # pmdaopenmetrics vllm.url when /metrics available
 power_sockets: auto                 # auto (socket-under-test) | all | comma list for jouleit -s
@@ -662,7 +708,8 @@ power_redfish: false                # also collect BMC system power via openmetr
 power_redfish_endpoint: null        # validated against denki when enabled
 power_retain_pcp_archive: true      # keep pmlogger archive under results for pmrep audits
 power_collector_image: null         # default: built tag from automation/test-execution/containers/power-collector
-power_collector_privileged: true    # required for RAPL sysfs; tighten in Phase 2 if possible
+power_collector_privileged: false   # true only for MSR / platform-specific quirks
+power_clock_max_skew_s: 2.0
 power_token_mismatch_tolerance_pct: 2.0
 ```
 
@@ -680,7 +727,9 @@ power_token_mismatch_tolerance_pct: 2.0
 - EPYC probe: verify AMD package (and dram) instances per §8.1.
 - Cloud smoke: probe reports `off`; metadata `power.power_mode: off` — never fake `measured`.
 - External mode: `power_collector` skipped; `power_mode: off` in metadata.
-- Failure: killed `pmlogger` mid-run → benchmark still succeeds; metadata records error.
+- Failure: killed `pmlogger` mid-run → benchmark still succeeds; `power_mode: off`, no measured roll-up.
+- RAPL wrap/reset fixtures: invalid intervals never produce negative W; clock skew beyond
+  `power_clock_max_skew_s` skips J/token for affected windows.
 - `collect_power=true` on host without RAPL → warning, benchmark continues.
 - Attribution: separate-host run yields `measured`; same-host same-socket co-location is
   recorded with the documented per-socket/all-socket limitation (§5.8).
