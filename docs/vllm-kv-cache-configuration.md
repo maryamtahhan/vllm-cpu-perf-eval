@@ -1,19 +1,13 @@
-# vLLM CPU Performance: Understanding KV Cache, max_model_len, and block_size
+# vLLM CPU Performance: Understanding KV Cache and max_model_len
 
 ## Executive Summary
 
-Three configuration parameters have **critical impact** on vLLM CPU inference performance:
+Two configuration parameters have **critical impact** on vLLM CPU inference performance:
 
 | Parameter | Impact | Default | CPU Recommendation |
 |-----------|--------|---------|-------------------|
-| `--max-model-len` | Memory allocation, throughput, latency | Model's max context | **Set to workload needs** (2048-8192) |
+| `--max-model-len` | Memory allocation, throughput | Model's max context | **Set to workload needs** (2048-8192) |
 | `VLLM_CPU_KVCACHE_SPACE` | KV cache memory budget | 4 GiB | **Scale with RAM tier** (4–100 GiB; see system-based sizing table) |
-| `--block-size` | Memory alignment, attention perf | 128 | **Always use 128** (or multiple of 32) |
-
-**Key Takeaway:** Properly configuring these parameters can improve:
-- **Throughput:** 2-3x (via better memory utilization)
-- **Latency:** 10-30% (via cache alignment)
-- **Concurrency:** 2-4x (via appropriate KV cache sizing)
 
 ---
 
@@ -22,11 +16,10 @@ Three configuration parameters have **critical impact** on vLLM CPU inference pe
 1. [Parameter Overview](#parameter-overview)
 2. [max_model_len: Context Length Configuration](#max_model_len-context-length-configuration)
 3. [KV Cache Size: Memory Budget](#kv-cache-size-memory-budget)
-4. [block_size: Cache Alignment](#block_size-cache-alignment)
-5. [Practical Recommendations](#practical-recommendations)
-6. [Common Pitfalls](#common-pitfalls)
-7. [Quick Reference](#quick-reference)
-8. [References](#references)
+4. [Practical Recommendations](#practical-recommendations)
+5. [Common Pitfalls](#common-pitfalls)
+6. [Quick Reference](#quick-reference)
+7. [References](#references)
 
 ---
 
@@ -54,13 +47,12 @@ num_layers=16, num_kv_heads=8, head_size=64 (hidden_size 2048 / num_attn_heads 3
 = ~256 MB per request at full context
 ```
 
-### Three Pillars of CPU Performance
+### Two Primary Tuning Levers
 
 | Parameter | Effect | Tuning guidance |
 | --- | --- | --- |
 | `max_model_len` | Maximum context per request | Higher = more memory per request; lower = more concurrent requests |
 | KV cache size | Total memory budget for all requests | Higher = more concurrent requests; limited by available RAM |
-| `block_size` | Cache alignment and access pattern | Must be a multiple of 32 for CPU; default 128 is optimal |
 
 ---
 
@@ -88,8 +80,8 @@ KV cache memory is **pre-allocated** based on `max_model_len`:
 
 ```python
 # From vLLM source (simplified)
-kv_cache_blocks = (max_model_len × max_num_seqs) / block_size
-total_kv_memory = kv_cache_blocks × block_memory_size
+per_request_kv ∝ max_model_len
+total_kv_memory ≈ per_request_kv × max_num_seqs
 ```
 
 **Example:** Chat workload (512 input + 512 output = 1024 tokens needed), ~7B model (bfloat16, MHA)
@@ -185,82 +177,19 @@ This convention is established in the project's [KV Cache Sizing Strategy](./des
 
 ---
 
-## block_size: Cache Alignment
-
-### How block_size Works
-
-`--block-size` sets the **granularity** of KV cache block allocation.
-
-**Command line:**
-```bash
-vllm serve model-name \
-  --block-size 128
-```
-
-**Default:** 128 (for CPU)
-
-### Performance Impact of block_size
-
-#### 1. **Memory Alignment (CRITICAL FOR CPU)**
-
-CPU SIMD operations (AVX2/AVX512/NEON) require **aligned memory access**:
-
-From vLLM CPU platform:
-
-```python
-if cache_config.block_size % 32 != 0:
-    logger.warning(
-        "CPU backend prefers block_size is multiples of 32, "
-        "otherwise the performance is not optimized."
-    )
-```
-
-**Why multiples of 32?**
-- **AVX2:** 256-bit registers = 32 bytes (16 × bfloat16)
-- **AVX512:** 512-bit registers = 64 bytes (32 × bfloat16)
-- **NEON:** 128-bit registers = 16 bytes (8 × bfloat16)
-
-**Block size 128 = 4 × 32**, optimal for all CPU architectures.
-
-### Recommendations for block_size
-
-**Simple rule:** **Always use `--block-size=128` for CPU**
-
-| Scenario | Recommended | Alternative | Rationale |
-|----------|-------------|-------------|-----------|
-| **Intel x86 (AVX2/AVX512/AMX)** | 128 | 64, 32 | Optimal alignment |
-| **ARM (NEON)** | 128 | 64, 32 | Multiple of 16 |
-| **RISC-V (RVV)** | 128 | 64, 32 | Vector alignment |
-| **Prefix caching enabled** | 128 | 64 | Balance reuse/perf |
-| **Memory constrained** | 128 | 64 | Minimal waste |
-
-**Configuration:**
-```bash
-# ✅ RECOMMENDED: Always use for CPU
-vllm serve model-name \
-  --block-size 128
-
-# ❌ AVOID: Not multiple of 32
-vllm serve model-name \
-  --block-size 100
-# WARNING: "CPU backend prefers block_size is multiples of 32"
-```
-
----
-
 ## Practical Recommendations
 
 ### Quick Reference Table
 
 **For different CPU configurations** (KV cache ranges are RAM-constrained heuristics for GQA models; for precise values use `per_request_kv × concurrency × 1.25` — see [Why the 1.25× Safety Margin?](#why-the-125-safety-margin)):
 
-| CPU Cores | RAM   | Model Size | max_model_len | KV Cache    | block_size | Expected Concurrency |
-|-----------|-------|------------|---------------|-------------|------------|---------------------|
-| 8         | 16GB  | 1-3B       | 2048          | 4-6 GiB     | 128        | 2-4                 |
-| 16        | 32GB  | 1-8B       | 2048-4096     | 8-12 GiB    | 128        | 6-10                |
-| 32        | 64GB  | 1-13B      | 2048-4096     | 16-32 GiB   | 128        | 12-20               |
-| 64        | 128GB | 1-30B      | 2048-8192     | 40-60 GiB   | 128        | 24-40               |
-| 128+      | 256GB | 1B-70B     | 4096-16384    | 64-100 GiB  | 128        | 40-80               |
+| CPU Cores | RAM   | Model Size | max_model_len | KV Cache    | Expected Concurrency |
+|-----------|-------|------------|---------------|-------------|---------------------|
+| 8         | 16GB  | 1-3B       | 2048          | 4-6 GiB     | 2-4                 |
+| 16        | 32GB  | 1-8B       | 2048-4096     | 8-12 GiB    | 6-10                |
+| 32        | 64GB  | 1-13B      | 2048-4096     | 16-32 GiB   | 12-20               |
+| 64        | 128GB | 1-30B      | 2048-8192     | 40-60 GiB   | 24-40               |
+| 128+      | 256GB | 1B-70B     | 4096-16384    | 64-100 GiB  | 40-80               |
 
 ### Workload-Specific Presets
 
@@ -270,7 +199,6 @@ The examples below are sized for a **64 GB system** (KV cache range 16–32 GiB,
 ```bash
 vllm serve model-name \
   --max-model-len 2048 \
-  --block-size 128 \
   --kv-cache-memory-bytes $((16 * 1024 * 1024 * 1024))  # 16 GB
 ```
 
@@ -278,7 +206,6 @@ vllm serve model-name \
 ```bash
 vllm serve model-name \
   --max-model-len 8192 \
-  --block-size 128 \
   --kv-cache-memory-bytes $((32 * 1024 * 1024 * 1024))  # 32 GB
 ```
 
@@ -286,7 +213,6 @@ vllm serve model-name \
 ```bash
 vllm serve model-name \
   --max-model-len 4096 \
-  --block-size 128 \
   --kv-cache-memory-bytes $((20 * 1024 * 1024 * 1024))  # 20 GB
 ```
 
@@ -294,7 +220,6 @@ vllm serve model-name \
 ```bash
 vllm serve model-name \
   --max-model-len 4096 \
-  --block-size 128 \
   --kv-cache-memory-bytes $((16 * 1024 * 1024 * 1024))  # 16 GB
 ```
 
@@ -309,7 +234,6 @@ workloads:
     vllm_args:
       - "--dtype=bfloat16"
       - "--max-model-len=2048"
-      - "--block-size=128"              # CRITICAL: Always include
       - "--no-enable-prefix-caching"    # For baseline testing
     kv_cache_space: "16GiB"
 
@@ -317,7 +241,6 @@ workloads:
     vllm_args:
       - "--dtype=bfloat16"
       - "--max-model-len=8192"
-      - "--block-size=128"              # CRITICAL: Always include
       - "--no-enable-prefix-caching"
     kv_cache_space: "32GiB"
 ```
@@ -347,51 +270,6 @@ vllm serve model --max-model-len 2048  # 2x actual need
 
 ---
 
-### Pitfall 2: Missing block_size Configuration
-
-**Problem:**
-```bash
-# No block_size specified
-vllm serve model --max-model-len 4096
-```
-
-**Impact:**
-- May use default (usually OK)
-- No guarantee of optimal alignment
-- Potential 10-20% performance loss
-
-**Solution:**
-```bash
-# Always explicitly set for CPU
-vllm serve model \
-  --max-model-len 4096 \
-  --block-size 128
-```
-
----
-
-### Pitfall 3: Non-Multiple-of-32 block_size
-
-**Problem:**
-```bash
-vllm serve model --block-size 100
-```
-
-**Impact:**
-```
-WARNING: CPU backend prefers block_size is multiples of 32,
-otherwise the performance is not optimized.
-```
-- Misaligned SIMD operations
-- 15-30% slower attention
-
-**Solution:**
-```bash
-vllm serve model --block-size 128  # Or 32, 64, 96, 160, etc.
-```
-
----
-
 ## Quick Reference
 
 ### Workload → `max_model_len`
@@ -412,10 +290,6 @@ vllm serve model --block-size 128  # Or 32, 64, 96, 160, etc.
 | 64 GB | 16–32 GiB |
 | 128+ GB | 40–60+ GiB |
 
-### CPU architecture → `block_size`
-
-All CPU architectures (x86, ARM, RISC-V) should use `block_size=128`.
-
 Copy final values from the **Practical Recommendations** section above.
 
 ---
@@ -426,8 +300,7 @@ Copy final values from the **Practical Recommendations** section above.
 
 1. **CPU Platform Configuration:**
    [`vllm/platforms/cpu.py`](https://github.com/vllm-project/vllm/blob/main/vllm/platforms/cpu.py)
-   - Lines 124-131: Block size validation
-   - Lines 133-137: KV cache space configuration
+   - KV cache space configuration
 
 2. **Model Configuration:**
    [`vllm/config/model.py`](https://github.com/vllm-project/vllm/blob/main/vllm/config/model.py)
@@ -435,7 +308,7 @@ Copy final values from the **Practical Recommendations** section above.
 
 3. **Cache Configuration:**
    [`vllm/config/cache.py`](https://github.com/vllm-project/vllm/blob/main/vllm/config/cache.py)
-   - KV cache memory sizing and block configuration
+   - KV cache memory sizing
 
 4. **Environment Variables:**
    [`vllm/envs.py`](https://github.com/vllm-project/vllm/blob/main/vllm/envs.py)

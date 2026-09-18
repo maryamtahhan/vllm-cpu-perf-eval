@@ -640,4 +640,4 @@ This will continue testing remaining models even if one fails.
 - [3-Phase Testing Methodology](../../docs/methodology/testing-phases.md)
 - [Test Workload Configurations](../../automation/test-execution/ansible/inventory/group_vars/all/test-workloads.yml)
 - [RHAIIS Test Script](../../automation/test-execution/scripts/bash/run-rhaiis-concurrent-load.sh)
-- **[vLLM KV Cache Configuration Guide](../../docs/vllm-kv-cache-configuration.md)** - Deep dive into max_model_len, KV cache sizing, and block_size for optimal performance
+- **[vLLM KV Cache Configuration Guide](../../docs/vllm-kv-cache-configuration.md)** - Deep dive into max_model_len and KV cache sizing for CPU inference
