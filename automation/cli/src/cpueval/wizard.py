@@ -97,6 +97,22 @@ FIELD_META: Dict[str, Dict[str, str]] = {
         "label": "dtype",
         "help": "Model dtype (e.g. bfloat16, float16)",
     },
+    "num_instances": {
+        "label": "vLLM instances",
+        "help": "Number of vLLM instances to deploy",
+    },
+    "cores_per_instance": {
+        "label": "Cores per instance",
+        "help": "CPU cores per vLLM instance (8, 16, 24, or 32)",
+    },
+    "routing_policy": {
+        "label": "Routing policy",
+        "help": "intelligent (EPP) or round_robin",
+    },
+    "start_core": {
+        "label": "Start core",
+        "help": "First CPU core for sequential instance pinning (e.g. 0)",
+    },
 }
 
 # Keys we expose in the wizard, in display order.
@@ -115,6 +131,10 @@ WIZARD_FIELD_ORDER = (
     "num_prompts",
     "phase",
     "dtype",
+    "num_instances",
+    "cores_per_instance",
+    "routing_policy",
+    "start_core",
 )
 
 
@@ -422,6 +442,9 @@ def build_params_from_answers(
             result.guidellm_numa = _parse_optional_int(value, "guidellm_numa_node")
         elif field in ("tasks", "batch_size", "phase", "dtype"):
             extra_pairs.append(f"{field}={value}")
+        elif field in suite.param_mappings:
+            # Suite-specific fields: use the mapped ansible/script var name
+            extra_pairs.append(f"{suite.param_mappings[field]}={value}")
 
     if extra_pairs:
         result.extra = extra_pairs
@@ -517,13 +540,14 @@ def _collect_cpu_pinning(
         "(see profiles/dual-socket-split.yaml)[/dim]"
     )
 
-    vllm_cpus = _prompt_optional_pinning(driver, "DUT vLLM CPU range", "e.g. 64-95")
-    if vllm_cpus:
-        answers["vllm_cpus"] = vllm_cpus
+    if "vllm_cpus" in suite.param_mappings:
+        vllm_cpus = _prompt_optional_pinning(driver, "DUT vLLM CPU range", "e.g. 64-95")
+        if vllm_cpus:
+            answers["vllm_cpus"] = vllm_cpus
 
-    vllm_numa = _prompt_optional_pinning(driver, "DUT vLLM NUMA node", "e.g. 1")
-    if vllm_numa:
-        answers["vllm_numa_node"] = vllm_numa
+        vllm_numa = _prompt_optional_pinning(driver, "DUT vLLM NUMA node", "e.g. 1")
+        if vllm_numa:
+            answers["vllm_numa_node"] = vllm_numa
 
     guidellm_cpus = _prompt_optional_pinning(
         driver, "Load generator CPU range", "e.g. 0-31"
@@ -598,6 +622,8 @@ def _collect_answers(
 
     if requires_model and not answers.get("model") and not answers.get("models"):
         raise typer.Exit(1)
+
+    _collect_cpu_pinning(driver, console, suite, answers)
 
     return answers
 
