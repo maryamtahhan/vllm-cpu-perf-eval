@@ -1,6 +1,7 @@
 """Tests for the interactive cpueval wizard."""
 
 import pytest
+import typer
 
 from cpueval.suite_registry import SuiteRegistry
 from cpueval.wizard import (
@@ -8,6 +9,8 @@ from cpueval.wizard import (
     get_host_env_status,
     run_wizard,
     select_suite_by_index,
+    validate_field_value,
+    validate_tag,
     _sorted_suites,
     _wizard_fields_for_suite,
 )
@@ -18,6 +21,12 @@ def host_env(monkeypatch):
     monkeypatch.setenv("DUT_HOSTNAME", "dut.example.com")
     monkeypatch.setenv("LOADGEN_HOSTNAME", "loadgen.example.com")
     monkeypatch.delenv("VLLM_ENDPOINT_MODE", raising=False)
+
+
+def _suite_choice(registry: SuiteRegistry, name: str) -> str:
+    """Menu index for a suite, robust against suite-list reordering."""
+    suites = _sorted_suites(registry)
+    return next(str(i) for i, s in enumerate(suites, start=1) if s.name == name)
 
 
 def test_wizard_fields_deduplicate_concurrent_load():
@@ -31,17 +40,51 @@ def test_wizard_fields_deduplicate_concurrent_load():
     assert "workload" not in fields
 
 
-def test_get_host_env_status_managed_missing():
-    import os
+def test_wizard_fields_scaleout():
+    registry = SuiteRegistry()
+    suite = registry.get_suite("vllm-scaleout")
+    assert suite is not None
 
-    for key in ("DUT_HOSTNAME", "LOADGEN_HOSTNAME", "VLLM_ENDPOINT_MODE"):
-        os.environ.pop(key, None)
+    fields = _wizard_fields_for_suite(suite)
+    assert fields == [
+        "model",
+        "num_instances",
+        "cores_per_instance",
+        "routing_policy",
+        "start_core",
+    ]
+
+
+def test_get_host_env_status_managed_missing(monkeypatch):
+    monkeypatch.delenv("DUT_HOSTNAME", raising=False)
+    monkeypatch.delenv("LOADGEN_HOSTNAME", raising=False)
+    monkeypatch.delenv("VLLM_ENDPOINT_MODE", raising=False)
 
     status = get_host_env_status()
     assert status["mode"] == "managed"
     assert status["hosts_ready"] is False
     assert "DUT_HOSTNAME" in status["missing"]
     assert "LOADGEN_HOSTNAME" in status["missing"]
+
+
+def test_get_host_env_status_external_ready(monkeypatch):
+    monkeypatch.setenv("VLLM_ENDPOINT_MODE", "external")
+    monkeypatch.setenv("VLLM_ENDPOINT_URL", "http://dut:8081/v1")
+
+    status = get_host_env_status()
+    assert status["mode"] == "external"
+    assert status["hosts_ready"] is True
+    assert status["missing"] == []
+
+
+def test_get_host_env_status_external_missing_url(monkeypatch):
+    monkeypatch.setenv("VLLM_ENDPOINT_MODE", "external")
+    monkeypatch.delenv("VLLM_ENDPOINT_URL", raising=False)
+
+    status = get_host_env_status()
+    assert status["mode"] == "external"
+    assert status["hosts_ready"] is False
+    assert status["missing"] == ["VLLM_ENDPOINT_URL"]
 
 
 def test_get_host_env_status_managed_ready(host_env):
@@ -160,11 +203,12 @@ def test_build_params_cpu_pinning():
 def test_wizard_concurrent_load_tailored_flow(host_env):
     from rich.console import Console
 
-    # suite 4, customize, models, cores, pinning x4, workloads, tag, dry-run, skip-doctor, launch
+    # suite, customize, models, cores, pinning x4, workloads, tag, dry-run, skip-doctor, launch
     result = run_wizard(
         Console(),
         inputs=[
-            "4", "y", "tiny", "32", "64-95", "1", "0-31", "0", "chat",
+            _suite_choice(SuiteRegistry(), "concurrent-load"),
+            "y", "tiny", "32", "64-95", "1", "0-31", "0", "chat",
             "", "y", "y", "y",
         ],
     )
@@ -191,3 +235,153 @@ def test_wizard_cancel_at_launch(host_env):
     )
 
     assert result is None
+
+
+# ─── Scale-out suite ─────────────────────────────────────────────────────────
+
+
+def test_build_params_scaleout_maps_to_scaleout_vars():
+    registry = SuiteRegistry()
+    suite = registry.get_suite("vllm-scaleout")
+    assert suite is not None
+
+    result = build_params_from_answers(
+        suite,
+        {
+            "model": "RedHatAI/granite-embedding-english-r2",
+            "num_instances": "3",
+            "cores_per_instance": "16",
+            "routing_policy": "round_robin",
+            "start_core": "0",
+        },
+    )
+
+    assert result.suite == "vllm-scaleout"
+    assert result.model == "RedHatAI/granite-embedding-english-r2"
+    assert sorted(result.extra) == [
+        "scaleout_cores_per_instance=16",
+        "scaleout_num_instances=3",
+        "scaleout_routing_policy=round_robin",
+        "scaleout_start_core=0",
+    ]
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"num_instances": "0"},
+        {"num_instances": "11"},
+        {"num_instances": "abc"},
+        {"cores_per_instance": "12"},
+        {"cores_per_instance": "fast"},
+        {"routing_policy": "random"},
+        {"start_core": "-1"},
+        {"start_core": "zero"},
+    ],
+)
+def test_build_params_scaleout_rejects_invalid_values(answers):
+    registry = SuiteRegistry()
+    suite = registry.get_suite("vllm-scaleout")
+    assert suite is not None
+
+    with pytest.raises(typer.BadParameter):
+        build_params_from_answers(suite, answers)
+
+
+def test_wizard_scaleout_customized_flow(host_env):
+    from rich.console import Console
+
+    # suite, customize, model, instances, cores/instance, routing, start core,
+    # load-gen pinning x2 (skip), tag, dry-run, skip-doctor, launch
+    result = run_wizard(
+        Console(),
+        inputs=[
+            _suite_choice(SuiteRegistry(), "vllm-scaleout"),
+            "y",
+            "RedHatAI/granite-embedding-english-r2",
+            "3", "16", "round_robin", "0",
+            "", "",
+            "scaleout-test", "y", "y", "y",
+        ],
+    )
+
+    assert result is not None
+    assert result.suite == "vllm-scaleout"
+    assert result.model == "RedHatAI/granite-embedding-english-r2"
+    assert sorted(result.extra) == [
+        "scaleout_cores_per_instance=16",
+        "scaleout_num_instances=3",
+        "scaleout_routing_policy=round_robin",
+        "scaleout_start_core=0",
+    ]
+    assert result.tag == "scaleout-test"
+    assert result.dry_run is True
+
+
+def test_wizard_scaleout_defaults_flow(host_env):
+    from rich.console import Console
+
+    # suite, no customize, tag skip, dry-run, skip-doctor, launch
+    result = run_wizard(
+        Console(),
+        inputs=[
+            _suite_choice(SuiteRegistry(), "vllm-scaleout"),
+            "n", "", "y", "y", "y",
+        ],
+    )
+
+    assert result is not None
+    assert result.suite == "vllm-scaleout"
+    assert result.model == "meta-llama/Llama-3.2-1B-Instruct"
+    assert sorted(result.extra) == [
+        "scaleout_cores_per_instance=24",
+        "scaleout_num_instances=2",
+        "scaleout_routing_policy=intelligent",
+        "scaleout_start_core=0",
+    ]
+
+
+# ─── Validation ──────────────────────────────────────────────────────────────
+
+
+def test_validate_field_value_scaleout():
+    assert validate_field_value("num_instances", "3") is None
+    assert validate_field_value("num_instances", "1") is None
+    assert validate_field_value("num_instances", "10") is None
+    assert validate_field_value("cores_per_instance", "24") is None
+    assert validate_field_value("routing_policy", "intelligent") is None
+    assert validate_field_value("routing_policy", "round_robin") is None
+    assert validate_field_value("start_core", "0") is None
+
+    assert validate_field_value("num_instances", "0") is not None
+    assert validate_field_value("num_instances", "11") is not None
+    assert validate_field_value("num_instances", "abc") is not None
+    assert validate_field_value("cores_per_instance", "12") is not None
+    assert validate_field_value("routing_policy", "random") is not None
+    assert validate_field_value("start_core", "-1") is not None
+
+    # Non-scaleout fields are not validated by the wizard.
+    assert validate_field_value("model", "anything-goes") is None
+
+
+def test_validate_tag():
+    assert validate_tag("smoke-1") is None
+    assert validate_tag("a") is None
+    assert validate_tag("x" * 30) is None
+
+    assert validate_tag("") is not None
+    assert validate_tag("bad tag!") is not None
+    assert validate_tag("under_score") is not None
+    assert validate_tag("x" * 31) is not None
+
+
+def test_wizard_rejects_invalid_tag_then_accepts(host_env):
+    from rich.console import Console
+
+    result = run_wizard(
+        Console(),
+        inputs=["1", "n", "bad tag!", "good-tag", "y", "y", "y"],
+    )
+
+    assert result is not None
+    assert result.tag == "good-tag"
