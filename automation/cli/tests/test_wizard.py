@@ -55,6 +55,17 @@ def test_wizard_fields_scaleout():
     ]
 
 
+def test_wizard_fields_embedding_scaleout():
+    registry = SuiteRegistry()
+    suite = registry.get_suite("embedding-scaleout")
+    assert suite is not None
+    assert suite.runner == "ansible"
+    fields = _wizard_fields_for_suite(suite)
+    assert "model" in fields
+    assert "num_instances" in fields
+    assert "routing_policy" in fields
+
+
 def test_get_host_env_status_managed_missing(monkeypatch):
     monkeypatch.delenv("DUT_HOSTNAME", raising=False)
     monkeypatch.delenv("LOADGEN_HOSTNAME", raising=False)
